@@ -21,7 +21,7 @@ def fetch_pharma_news(query: str = "pharmaceutical", page_size: int = 10) -> Lis
     
     # Add date filter (last 30 days)
     date_from = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-    params["from"] = date_from
+    
     
     response = APIClient.make_request(config.NEWSAPI_ENDPOINT, params=params)
     
