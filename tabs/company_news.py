@@ -77,12 +77,11 @@ def show():
     
     # Quick company buttons
     st.markdown("### 🔗 Quick Access")
-    cols = st.columns(4)
-    
-    top_companies = ["Pfizer", "Moderna", "Johnson & Johnson", "AstraZeneca"]
+    top_companies = ["Pfizer", "Moderna", "Johnson & Johnson", "AstraZeneca", "Dr. Reddy's Laboratories", "Sun Pharma"]
+    cols = st.columns(3)
     for idx, company in enumerate(top_companies):
-        with cols[idx]:
-            if st.button(company, use_container_width=True, disabled=(company == selected_company)):
+        with cols[idx % 3]:
+            if st.button(company, key=f"btn_{company}", use_container_width=True, disabled=(company == selected_company)):
                 st.session_state.selected_company = company
                 st.rerun()
     

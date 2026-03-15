@@ -1,7 +1,8 @@
 """
-Clinical Trials Page
+Clinical Trials Page — uses client-side shuffle rotation for refresh variety
 """
 import streamlit as st
+import random
 from utils.data_fetchers import fetch_clinical_trials
 import pandas as pd
 
@@ -9,6 +10,12 @@ import pandas as pd
 def show():
     st.markdown('<h2 class="gradient-header">🔬 Clinical Trials</h2>', unsafe_allow_html=True)
     st.markdown("Search clinical trials from ClinicalTrials.gov database")
+    
+    # Initialize session state
+    if "trials_shuffle_seed" not in st.session_state:
+        st.session_state.trials_shuffle_seed = 0
+    if "last_trials_query" not in st.session_state:
+        st.session_state.last_trials_query = ""
     
     # Search interface
     col1, col2 = st.columns([3, 1])
@@ -22,23 +29,37 @@ def show():
     
     with col2:
         page_size = st.selectbox(
-            "Results",
-            options=[5, 10, 20, 50],
+            "Trials to show",
+            options=[5, 10, 20],
             index=1,
             label_visibility="collapsed"
         )
     
     query = search_query if search_query else "cancer"
+
+    # Reset shuffle seed when query changes
+    if search_query != st.session_state.last_trials_query:
+        st.session_state.trials_shuffle_seed = 0
+        st.session_state.last_trials_query = search_query
     
-    # Fetch trials
+    # Fetch a large batch (cached)
     with st.spinner("🔍 Searching clinical trials..."):
-        trials = fetch_clinical_trials(query=query, page_size=page_size)
+        all_trials = fetch_clinical_trials(query=query, page_size=100)
     
-    if not trials:
+    if not all_trials:
         st.warning("⚠️ No trials found. Try a different search term.")
         return
     
-    st.success(f"✅ Found {len(trials)} trials")
+    # Shuffle the full list using the current seed, then slice
+    seed = st.session_state.trials_shuffle_seed
+    shuffled = all_trials.copy()
+    random.Random(seed).shuffle(shuffled)
+    trials = shuffled[:page_size]
+
+    total_sets = max(1, len(all_trials) // page_size)
+    current_set = (seed % total_sets) + 1
+    
+    st.success(f"✅ Showing {len(trials)} of {len(all_trials)} trials  |  Set {current_set} of {total_sets}")
     
     # Display as cards
     for trial in trials:
@@ -68,8 +89,22 @@ def show():
             </div>
             """, unsafe_allow_html=True)
     
-    # Refresh button
+    # Navigation buttons
     st.markdown("<br>", unsafe_allow_html=True)
-    if st.button("🔄 Refresh Results", use_container_width=True):
-        st.cache_data.clear()
-        st.rerun()
+    col_prev, col_refresh, col_next = st.columns([1, 2, 1])
+    
+    with col_prev:
+        if seed > 0:
+            if st.button("⬅️ Previous Set", use_container_width=True):
+                st.session_state.trials_shuffle_seed = max(0, seed - 1)
+                st.rerun()
+    
+    with col_refresh:
+        if st.button("🔄 Show Different Trials", use_container_width=True, type="primary"):
+            st.session_state.trials_shuffle_seed = seed + 1
+            st.rerun()
+    
+    with col_next:
+        if st.button("Next Set ➡️", use_container_width=True):
+            st.session_state.trials_shuffle_seed = seed + 1
+            st.rerun()

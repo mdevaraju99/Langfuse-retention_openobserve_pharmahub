@@ -31,7 +31,7 @@ CACHE_TTL = {
     "drug_info": 86400,     # 24 hours
     "clinical_trials": 21600,  # 6 hours
     "research": 7200,       # 2 hours
-    "analytics": 1800,      # 30 minutes
+    "analytics": 86400,     # 24 hours
     "events": 604800        # 1 week
 }
 
@@ -49,7 +49,8 @@ PHARMA_COMPANIES = [
     "Pfizer", "Moderna", "Johnson & Johnson", "AstraZeneca",
     "Novartis", "Roche", "Merck", "GSK", "Sanofi", "AbbVie",
     "Bristol Myers Squibb", "Eli Lilly", "Gilead Sciences",
-    "Amgen", "Biogen", "Regeneron"
+    "Amgen", "Biogen", "Regeneron", "Dr. Reddy's Laboratories",
+    "Sun Pharma", "Cipla", "Lupin", "Zydus Lifesciences", "Takeda"
 ]
 
 # Major pharma news sources
