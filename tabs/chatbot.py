@@ -1,38 +1,30 @@
-"""
-AI Chatbot Page with Multi-Document RAG
-"""
 import streamlit as st
-from groq import Groq
 import config
-from utils.rag_pipeline import get_rag_context, get_documents_list
+from groq import Groq
 
 
-def get_groq_response(question: str, chat_history: list, context: str = "") -> str:
-    """Get response from Groq AI with optional RAG context"""
+def get_groq_response(question: str, chat_history: list) -> str:
+    """Get response from Groq AI with pharma guardrails"""
     try:
         if not config.GROQ_API_KEY:
             return "⚠️ Please set your GROQ_API_KEY in the .env file to use the chatbot.\\n\\nGet a free API key at: https://console.groq.com/"
         
         client = Groq(api_key=config.GROQ_API_KEY)
         
-        # System prompt for pharma domain
-        system_prompt = """You are an expert pharmaceutical knowledge assistant with deep expertise in clinical trials, drug mechanisms, and regulatory affairs.
+        # System prompt for general pharma domain
+        system_prompt = """You are an expert pharmaceutical knowledge assistant with deep expertise in drugs, diseases, clinical trial phases, and regulatory topics.
+
+STRICT DOMAIN RULE:
+- You ONLY answer questions related to the pharmaceutical domain (drugs, clinical trials, healthcare research, regulatory affairs, biotech, etc.).
+- If the user asks a question that is NOT related to the pharmaceutical domain, you MUST politely refuse and say exactly: "sorry please ask pharma related questions".
+- Do not provide any non-pharma information, even if you know it.
 
 INSTRUCTIONS:
-1. Answer based ONLY on the provided context if available. Never hallucinate.
-2. Always cite the exact source document in brackets like [document_name.pdf] after each fact.
-3. Use rich markdown formatting: headers (##, ###), bullet points, **bold**, tables, and emojis.
-4. For COMPARISON questions (protocol vs results, expected vs actual):
-   - Use a markdown table to show the comparison side-by-side
-   - Clearly label which document each value comes from
-   - Add a "🔎 Comparison" section with your judgment
-5. For MECHANISM questions: use numbered steps or a flow (→) to show causality
-6. For SAFETY questions: separate by severity levels using bullet points
-7. Always end with a clear conclusion or summary section
-8. Use emojis: 📘 Protocol/Plan, 📊 Results/Data, 🔬 Mechanism, ⚠️ Safety, 🏁 Conclusion, 🔎 Comparison
-
-Provide accurate, helpful responses. Keep responses concise but informative.
-Always remind users to consult healthcare professionals for medical advice."""
+1. Use your general knowledge to provide accurate information about the pharmaceutical industry.
+2. Use rich markdown formatting: headers (##, ###), bullet points, and **bold**.
+3. Always include a medical disclaimer: "Please consult healthcare professionals for medical advice."
+4. Be concise, professional, and helpful.
+5. Use emojis where appropriate: 🔬 Research, 💊 Drugs, 🏥 Clinical, ⚖️ Regulatory."""
         
         # Build messages
         messages = [{"role": "system", "content": system_prompt}]
@@ -41,19 +33,14 @@ Always remind users to consult healthcare professionals for medical advice."""
         for msg in chat_history[-10:]:  # Last 10 messages for context
             messages.append(msg)
         
-        # Add current question with context if available
-        if context:
-            user_content = f"""Based on the following context from uploaded documents:\n\n{context}\n\n---\n\nQuestion: {question}"""
-        else:
-            user_content = question
-        
-        messages.append({"role": "user", "content": user_content})
+        # Add current question
+        messages.append({"role": "user", "content": question})
         
         # Get response
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=messages,
-            temperature=0.7 if not context else 0.3,  # Lower temp for RAG
+            temperature=0.7,
             max_tokens=1024
         )
         
@@ -70,21 +57,6 @@ def show():
     # Initialize chat history if not exists
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
-    
-    # RAG / Knowledge Base Section in Sidebar
-    with st.sidebar:
-        st.markdown("---")
-        
-        # Show document count
-        docs = get_documents_list()
-        
-        if docs:
-            st.markdown(f"### 📚 Knowledge Base")
-            st.success(f"✅ **{len(docs)} documents** loaded")
-            st.caption("Go to 'Company Knowledge' tab to manage documents")
-        else:
-            st.markdown("### 📚 Knowledge Base")
-            st.info("No documents uploaded. Go to 'Company Knowledge' tab to upload PDFs.")
     
     # Display chat history
     for message in st.session_state.chat_history:
@@ -115,27 +87,8 @@ def show():
         # Get AI response
         with st.chat_message("assistant", avatar="🤖"):
             with st.spinner("Thinking..."):
-                # Try RAG retrieval with enhanced error handling
-                context = ""
-                retrieval_status = ""
-                try:
-                    if docs:  # Only try RAG if documents exist
-                        context = get_rag_context(user_input, top_k=15, max_docs=5)
-                        if context and len(context.strip()) > 100:
-                            retrieval_status = "✅ Retrieved information from uploaded documents"
-                            st.caption(retrieval_status)
-                        else:
-                            # If retrieval returned insufficient content
-                            retrieval_status = "⚠️ Limited document matches found. Providing general knowledge..."
-                            st.caption(retrieval_status)
-                            context = ""  # Fall back to base knowledge
-                except Exception as e:
-                    retrieval_status = f"⚠️ RAG retrieval issue: {str(e)[:80]}. Using base knowledge."
-                    st.caption(retrieval_status)
-                    context = ""
-                
                 # Get response
-                response = get_groq_response(user_input, st.session_state.chat_history[:-1], context)
+                response = get_groq_response(user_input, st.session_state.chat_history[:-1])
                 st.markdown(response)
         
         # Add to history
@@ -151,22 +104,13 @@ def show():
         st.markdown("---")
         st.markdown("### 💡 Example Questions")
         
-        # Dynamic examples based on whether docs are loaded
-        if docs:
-            examples = [
-                "Summarize the key findings from the documents",
-                "What safety concerns are mentioned?",
-                "Explain the mechanism of action",
-                "Compare results across documents",
-            ]
-        else:
-            examples = [
-                "What is metformin used for?",
-                "Explain Phase 3 clinical trials",
-                "What are biologics?",
-                "How does FDA drug approval work?",
-                "Latest in cancer immunotherapy"
-            ]
+        examples = [
+            "What is metformin used for?",
+            "Explain Phase 3 clinical trials",
+            "What are biologics?",
+            "How does FDA drug approval work?",
+            "Latest in cancer immunotherapy"
+        ]
         
         for example in examples:
             if st.button(f"💬 {example}", use_container_width=True, key=f"ex_{example}"):
@@ -181,35 +125,17 @@ def show():
     
     # Show placeholder if no messages
     if not st.session_state.chat_history:
-        if docs:
-            st.info(f"""
-            👋 **Welcome to the Pharma Knowledge Chatbot with Multi-Document RAG!**
-            
-            You currently have **{len(docs)} documents** in your knowledge base.
-            
-            I can help you:
-            - Answer questions based on YOUR uploaded documents
-            - Synthesize information across multiple documents
-            - Compare and contrast findings
-            - Explain complex pharmaceutical concepts
-            
-            Try asking about content from your uploaded documents!
-            """)
-        else:
-            st.info("""
-            👋 **Welcome to the Pharma Knowledge Chatbot!**
-            
-            I can help you with:
-            - Drug information and usage
-            - Clinical trial explanations
-            - Regulatory guidance
-            - Research paper insights
-            - Industry trends and news
-            
-            💡 **Tip:** Upload documents in the 'Company Knowledge' tab to ask questions about YOUR specific documents!
-            
-            Try asking a question below or click an example on the sidebar!
-            """)
+        st.info("""
+        👋 **Welcome to the Pharma Knowledge Chatbot!**
+        
+        I can help you with:
+        - Drug information and usage
+        - Clinical trial explanations
+        - Regulatory guidance
+        - Pharma industry trends and news
+        
+        💡 **Tip:** Go to the 'Company Knowledge' tab if you want to ask questions about your uploaded documents!
+        """)
         
         # Check if API key is set
         if not config.GROQ_API_KEY:

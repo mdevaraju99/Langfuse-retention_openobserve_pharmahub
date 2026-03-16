@@ -180,10 +180,8 @@ def show():
     st.markdown('<h2 class="gradient-header">📅 Pharma Events & Opportunities</h2>', unsafe_allow_html=True)
     st.markdown("🔴 **Live Feed** | Auto-filtered for quality | Updates every hour")
     
-    # Add filter controls
+    # Refresh button
     col1, col2 = st.columns([3, 1])
-    with col1:
-        show_past = st.checkbox("📜 Include Recent Past Events", value=True)
     with col2:
         if st.button("🔄 Refresh", use_container_width=True):
             st.cache_data.clear()
@@ -214,11 +212,11 @@ def show():
                     seen_urls.add(url)
                     unique_articles.append(article)
             
-            # Apply smart filtering
+            # Apply smart filtering (Upcoming only)
             future_events, past_events = smart_event_filter(
                 unique_articles, 
                 event_type=event_type,
-                include_past=show_past
+                include_past=False
             )
         
         # Display results
@@ -227,10 +225,6 @@ def show():
             st.markdown(f"### 🔮 Upcoming {tab_name}")
             display_cards(future_events, icon)
         
-        if past_events and show_past:
-            st.markdown(f"### 📜 Recent {tab_name}")
-            st.info(f"Showing {len(past_events)} recently completed or announced events")
-            display_cards(past_events, "📰")
         
         if not future_events and not past_events:
             st.warning(f"❌ No {tab_name} found in current news feed")

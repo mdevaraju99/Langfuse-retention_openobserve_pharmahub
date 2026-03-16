@@ -25,6 +25,8 @@ def format_number(num: int) -> str:
 
 def truncate_text(text: str, max_length: int = 200) -> str:
     """Truncate text with ellipsis"""
+    if text is None:
+        return ""
     if len(text) <= max_length:
         return text
     return text[:max_length].rsplit(' ', 1)[0] + "..."

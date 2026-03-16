@@ -10,6 +10,24 @@ from utils.formatters import truncate_text
 from datetime import datetime
 
 
+def is_pharma_related(query):
+    """Check if a query is related to the pharmaceutical domain"""
+    if not query or query.strip() == "":
+        return True
+    
+    pharma_keywords = [
+        "pharmaceutical", "pharma", "drug", "medicine", "medical", "clinical", "fda", 
+        "regulatory", "vaccine", "therapy", "biotech", "healthcare", "life sciences",
+        "oncology", "cardiology", "neurology", "diabetes", "infectious", "trial",
+        "patient", "doctor", "hospital", "prescription", "pharmacy", "biologic",
+        "generic", "health", "cancer", "alzheimer", "heart", "brain", "vaccination",
+        "medication", "dose", "tablet", "capsule", "treatment", "cure", "physician"
+    ]
+    
+    query_lower = query.lower()
+    return any(keyword in query_lower for keyword in pharma_keywords)
+
+
 def show():
     st.markdown('<h2 class="gradient-header">📰 Pharma News</h2>', unsafe_allow_html=True)
     st.markdown("Latest pharmaceutical industry news from around the world")
@@ -27,6 +45,7 @@ def show():
         search_query = st.text_input(
             "Search news",
             placeholder="e.g., COVID vaccine, FDA approval, drug trials...",
+            key="news_search_input",
             label_visibility="collapsed"
         )
 
@@ -37,6 +56,11 @@ def show():
             index=1,
             label_visibility="collapsed"
         )
+
+    # Validate search query
+    if search_query and not is_pharma_related(search_query):
+        st.warning("⚠️ sorry please ask pharma related questions")
+        return
 
     query = search_query if search_query else "pharmaceutical drug"
 
