@@ -4,6 +4,9 @@ from neo4j import GraphDatabase
 from dotenv import load_dotenv
 from typing import List, Dict, Any, Optional
 import hashlib
+import re
+
+import config
 
 load_dotenv()
 
@@ -37,25 +40,31 @@ class Neo4jManager:
 
     def create_vector_index(self):
         """Creates a vector index on Chunk nodes if it doesn't exist."""
-        check_query = "SHOW INDEXES YIELD name WHERE name = 'chunk_embeddings' RETURN count(*) as count"
-        
-        create_query = """
-        CREATE VECTOR INDEX chunk_embeddings IF NOT EXISTS
+        index_name = getattr(config, "NEO4J_VECTOR_INDEX_NAME", "chunk_embeddings")
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", index_name or ""):
+            logger.warning("Invalid NEO4J_VECTOR_INDEX_NAME; falling back to 'chunk_embeddings'.")
+            index_name = "chunk_embeddings"
+        check_query = (
+            "SHOW INDEXES YIELD name WHERE name = $index_name RETURN count(*) as count"
+        )
+
+        create_query = f"""
+        CREATE VECTOR INDEX {index_name} IF NOT EXISTS
         FOR (c:Chunk) ON (c.embedding)
-        OPTIONS {indexConfig: {
+        OPTIONS {{indexConfig: {{
          `vector.dimensions`: 384,
          `vector.similarity_function`: 'cosine'
-        }}
+        }}}}
         """
         try:
             with self.driver.session() as session:
-                result = session.run(check_query)
+                result = session.run(check_query, index_name=index_name)
                 count = result.single()["count"]
                 if count > 0:
-                    logger.info("Vector index 'chunk_embeddings' already exists. Skipping creation.")
+                    logger.info("Vector index '%s' already exists. Skipping creation.", index_name)
                     return
 
-                logger.info("Creating vector index 'chunk_embeddings'...")
+                logger.info("Creating vector index '%s'...", index_name)
                 session.run(create_query)
                 logger.info("Vector index creation command sent.")
         except Exception as e:
@@ -66,8 +75,15 @@ class Neo4jManager:
         hash_input = f"{filename}_{content_preview[:500]}"
         return hashlib.md5(hash_input.encode()).hexdigest()
 
-    def add_document(self, filename: str, chunks: List[str], embeddings: List[List[float]], 
-                     doc_type: str = "unknown", entities_per_chunk: Optional[List[Dict]] = None):
+    def add_document(
+        self,
+        filename: str,
+        chunks: List[str],
+        embeddings: List[List[float]],
+        doc_type: str = "unknown",
+        entities_per_chunk: Optional[List[Dict]] = None,
+        media_metadata: Optional[Dict[str, Any]] = None,
+    ):
         """
         Adds a document and its chunks to the graph with entity extraction.
         
@@ -98,7 +114,11 @@ class Neo4jManager:
             upload_date: datetime(),
             doc_type: $doc_type,
             file_hash: $file_hash,
-            chunk_count: size($chunks)
+            chunk_count: size($chunks),
+            table_count: $table_count,
+            image_count: $image_count,
+            formula_like_count: $formula_like_count,
+            chart_like_count: $chart_like_count
         })
         WITH d
         UNWIND range(0, size($chunks)-1) AS i
@@ -122,8 +142,19 @@ class Neo4jManager:
         """
         try:
             with self.driver.session() as session:
-                result = session.run(query, filename=filename, chunks=chunks, 
-                                   embeddings=embeddings, doc_type=doc_type, file_hash=file_hash)
+                meta = media_metadata or {}
+                result = session.run(
+                    query,
+                    filename=filename,
+                    chunks=chunks,
+                    embeddings=embeddings,
+                    doc_type=doc_type,
+                    file_hash=file_hash,
+                    table_count=int(meta.get("table_count", 0)),
+                    image_count=int(meta.get("image_count", 0)),
+                    formula_like_count=int(meta.get("formula_like_count", 0)),
+                    chart_like_count=int(meta.get("chart_like_count", 0)),
+                )
                 result.consume()
                 
                 # Add entities if provided
@@ -249,7 +280,10 @@ class Neo4jManager:
         MATCH (d:Document)
         OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk)
         RETURN d.filename as filename, d.upload_date as upload_date, 
-               d.doc_type as doc_type, count(c) as chunk_count
+               d.doc_type as doc_type, count(c) as chunk_count,
+               d.table_count as table_count, d.image_count as image_count,
+               d.formula_like_count as formula_like_count,
+               d.chart_like_count as chart_like_count
         ORDER BY d.upload_date DESC
         """
         try:
@@ -280,8 +314,9 @@ class Neo4jManager:
         """
         Finds similar chunks using vector search.
         """
-        query = """
-        CALL db.index.vector.queryNodes('pharma_vector_index', $top_k, $query_embedding)
+        index_name = getattr(config, "NEO4J_VECTOR_INDEX_NAME", "chunk_embeddings")
+        query = f"""
+        CALL db.index.vector.queryNodes('{index_name}', $top_k, $query_embedding)
         YIELD node, score
         MATCH (node)<-[:HAS_CHUNK]-(d:Document)
         RETURN node.text AS text, score, node.chunk_index AS index, 
@@ -315,7 +350,14 @@ class Neo4jManager:
             
         return "\n\n---\n\n".join(context_parts)
     
-    def get_multi_doc_context(self, query_embedding, top_k=15, max_docs=5, traverse_graph=True):
+    def get_multi_doc_context(
+        self,
+        query_embedding,
+        top_k=15,
+        max_docs=5,
+        traverse_graph=True,
+        user_query: Optional[str] = None,
+    ):
         """
         Enhanced retrieval for multi-document questions.
         Uses a hybrid approach: vector search + keyword fallback + context expansion.
@@ -332,7 +374,7 @@ class Neo4jManager:
         # Step 2: If vector search fails or returns too few results, use fallback
         if not similar_chunks or len(similar_chunks) < 3:
             logger.info("Vector search returned insufficient results, using hybrid retrieval")
-            return self._get_context_hybrid(top_k=top_k, max_docs=max_docs)
+            return self._get_context_hybrid(top_k=top_k, max_docs=max_docs, user_query=user_query)
         
         # Step 3: Get document diversity (limit to max_docs)
         docs_seen = set()
@@ -381,7 +423,33 @@ class Neo4jManager:
         
         return "\n\n---\n\n".join(context_parts)
     
-    def _get_context_hybrid(self, top_k=15, max_docs=5) -> str:
+    @staticmethod
+    def _cypher_escape_literal(s: str) -> str:
+        """Escape for safe use inside single-quoted Cypher string literals."""
+        return (s or "").replace("\\", "\\\\").replace("'", "\\'")
+
+    @staticmethod
+    def _keywords_from_query(user_query: Optional[str], max_terms: int = 10) -> List[str]:
+        if not user_query:
+            return []
+        stop = {
+            "the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "with", "is", "are",
+            "was", "were", "be", "been", "being", "what", "how", "why", "when", "where", "which",
+            "does", "do", "did", "can", "could", "would", "should", "may", "might", "this", "that",
+            "these", "those", "from", "into", "about", "than", "then", "it", "its", "as", "at", "by",
+        }
+        tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9\-\%]{2,}", user_query.lower())
+        out: List[str] = []
+        for t in tokens:
+            if t in stop:
+                continue
+            if t not in out:
+                out.append(t)
+            if len(out) >= max_terms:
+                break
+        return out
+
+    def _get_context_hybrid(self, top_k=15, max_docs=5, user_query: Optional[str] = None) -> str:
         """
         Fallback hybrid retrieval: keyword matching + semantic matching
         when vector search is unavailable or insufficient.
@@ -396,21 +464,32 @@ class Neo4jManager:
             'adverse', 'dose', 'administration', 'dosing', 'protocol',
             'baseline', 'Week 72', 'efficacy', 'results', 'outcome'
         ]
+
+        query_terms = self._keywords_from_query(user_query, max_terms=12)
+        # Prefer longer / more specific tokens first
+        query_terms.sort(key=len, reverse=True)
+        combined_keywords: List[str] = []
+        for kw in clinical_keywords + query_terms:
+            if kw not in combined_keywords:
+                combined_keywords.append(kw)
+        combined_keywords = combined_keywords[:24]
         
         try:
             with self.driver.session() as session:
                 # Build WHERE clause for keywords
                 keyword_or = " OR ".join(
-                    [f"c.text CONTAINS '{kw}'" for kw in clinical_keywords]
+                    [f"c.text CONTAINS '{self._cypher_escape_literal(kw)}'" for kw in combined_keywords]
                 )
-                
+                if not keyword_or.strip():
+                    return ""
+
                 query = f"""
                 MATCH (d:Document)-[:HAS_CHUNK]->(c:Chunk)
                 WHERE {keyword_or}
                 RETURN c.text as text, c.chunk_index as idx, d.filename as doc,
                        count(*) as match_count
                 ORDER BY match_count DESC, c.chunk_index ASC
-                LIMIT {top_k}
+                LIMIT {int(top_k)}
                 """
                 
                 result = session.run(query)
@@ -422,9 +501,6 @@ class Neo4jManager:
                     if chunk_text not in seen_texts:
                         context_parts.append(f"[Source: {doc_name}]\n{chunk_text}")
                         seen_texts.add(chunk_text)
-                        
-                        if len(context_parts) >= max_docs:
-                            break
         except Exception as e:
             logger.error(f"Hybrid retrieval failed: {e}")
         

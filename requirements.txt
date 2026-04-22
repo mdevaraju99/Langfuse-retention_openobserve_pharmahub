@@ -10,9 +10,12 @@ langchain-community>=0.0.10
 langchain-groq>=0.0.1
 faiss-cpu>=1.7.4
 sentence-transformers>=2.3.1
+codecarbon>=2.3.0
 pypdf>=4.0.0
+pymupdf>=1.24.0
 langchain-text-splitters>=0.0.1
 neo4j>=5.18.0
+pyspellchecker>=0.8.0
 # scispacy>=0.5.3  # Optional: Requires Microsoft Visual C++ 14.0+ Build Tools
 # Install separately if needed: pip install scispacy
 # Then install bio model: pip install https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.3/en_core_sci_sm-0.5.3.tar.gz

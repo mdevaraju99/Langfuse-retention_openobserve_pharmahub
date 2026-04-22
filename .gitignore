@@ -139,3 +139,6 @@ Thumbs.db
 # Project specific
 *.log
 .env
+data/feedback/*.jsonl
+data/media_assets/
+data/benchmarks/

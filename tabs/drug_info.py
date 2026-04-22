@@ -9,12 +9,16 @@ from utils.formatters import truncate_text
 def show():
     st.markdown('<h2 class="gradient-header">💊 Drug Information</h2>', unsafe_allow_html=True)
     st.markdown("Search comprehensive drug information from FDA OpenFDA database")
+
+    pending = st.session_state.pop("drug_pending_search", None)
     
     # Search interface
     drug_name = st.text_input(
         "Enter drug name (brand or generic)",
+        value=pending or "",
         placeholder="e.g., Aspirin, Lipitor, Metformin...",
-        label_visibility="visible"
+        label_visibility="visible",
+        key="drug_name_input",
     )
     
     if drug_name:
@@ -76,5 +80,5 @@ def show():
         for idx, drug in enumerate(popular_drugs):
             with cols[idx % 4]:
                 if st.button(drug, use_container_width=True):
-                    st.session_state.drug_search = drug
+                    st.session_state.drug_pending_search = drug
                     st.rerun()

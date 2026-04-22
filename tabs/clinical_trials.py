@@ -89,22 +89,27 @@ def show():
             </div>
             """, unsafe_allow_html=True)
     
-    # Navigation buttons
+    # Navigation buttons (fixed grid so alignment does not jump)
     st.markdown("<br>", unsafe_allow_html=True)
-    col_prev, col_refresh, col_next = st.columns([1, 2, 1])
-    
-    with col_prev:
-        if seed > 0:
-            if st.button("⬅️ Previous Set", use_container_width=True):
+    nav_container = st.container()
+    with nav_container:
+        col_prev, col_refresh, col_next = st.columns(3)
+        
+        with col_prev:
+            if st.button(
+                "⬅️ Previous Set",
+                use_container_width=True,
+                disabled=(seed == 0),
+            ):
                 st.session_state.trials_shuffle_seed = max(0, seed - 1)
                 st.rerun()
-    
-    with col_refresh:
-        if st.button("🔄 Show Different Trials", use_container_width=True, type="primary"):
-            st.session_state.trials_shuffle_seed = seed + 1
-            st.rerun()
-    
-    with col_next:
-        if st.button("Next Set ➡️", use_container_width=True):
-            st.session_state.trials_shuffle_seed = seed + 1
-            st.rerun()
+        
+        with col_refresh:
+            if st.button("🔄 Show Different Trials", use_container_width=True, type="primary"):
+                st.session_state.trials_shuffle_seed = seed + 1
+                st.rerun()
+        
+        with col_next:
+            if st.button("Next Set ➡️", use_container_width=True):
+                st.session_state.trials_shuffle_seed = seed + 1
+                st.rerun()

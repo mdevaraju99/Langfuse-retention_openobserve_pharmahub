@@ -12,6 +12,10 @@ import config
 def show():
     st.markdown('<h2 class="gradient-header">🏢 Pharma Company News</h2>', unsafe_allow_html=True)
     st.markdown("Latest news from major pharmaceutical companies")
+
+    companies = config.PHARMA_COMPANIES
+    pending = st.session_state.pop("company_pending_select", None)
+    default_index = companies.index(pending) if pending and pending in companies else 0
     
     # Company selector
     col1, col2 = st.columns([2, 1])
@@ -19,8 +23,9 @@ def show():
     with col1:
         selected_company = st.selectbox(
             "Select Company",
-            options=config.PHARMA_COMPANIES,
-            index=0
+            options=companies,
+            index=default_index,
+            key="company_news_select",
         )
     
     with col2:
@@ -82,7 +87,7 @@ def show():
     for idx, company in enumerate(top_companies):
         with cols[idx % 3]:
             if st.button(company, key=f"btn_{company}", use_container_width=True, disabled=(company == selected_company)):
-                st.session_state.selected_company = company
+                st.session_state.company_pending_select = company
                 st.rerun()
     
     # Refresh button

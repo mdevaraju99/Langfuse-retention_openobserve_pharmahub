@@ -332,3 +332,153 @@ a:hover {
         padding: 1rem;
     }
 }
+
+/* ------------------------------ */
+/* UI Enhancement Pack (v2)       */
+/* ------------------------------ */
+
+.block-container {
+    padding-top: 1.4rem !important;
+    padding-bottom: 1.2rem !important;
+    max-width: 100% !important;
+    padding-left: 1.4rem !important;
+    padding-right: 1.4rem !important;
+}
+
+.app-hero {
+    position: relative;
+    overflow: hidden;
+    margin: 0 0 1.15rem 0;
+    padding: 1.2rem 1.25rem 1.1rem 1.25rem;
+    border-radius: 18px;
+    border: 1px solid var(--hero-border);
+    background: var(--hero-bg);
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+    backdrop-filter: blur(6px);
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.hero-tag {
+    display: inline-block;
+    font-size: 0.72rem;
+    letter-spacing: 1px;
+    font-weight: 600;
+    color: #E9D5FF;
+    border: 1px solid rgba(233, 213, 255, 0.45);
+    background: rgba(139, 92, 246, 0.22);
+    border-radius: 999px;
+    padding: 0.26rem 0.65rem;
+    margin-bottom: 0.45rem;
+}
+
+.hero-title {
+    margin: 0;
+    font-family: "Poppins", sans-serif;
+    font-weight: 700;
+    font-size: 2rem;
+    line-height: 1.2;
+    background: var(--hero-title);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+.hero-subtitle {
+    margin: 0.45rem 0 0.75rem 0;
+    font-size: 1rem;
+    max-width: 850px;
+    color: var(--hero-subtitle-color);
+}
+
+.hero-kpis {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.hero-pill {
+    font-size: 0.78rem;
+    color: var(--hero-pill-text);
+    border: 1px solid var(--hero-pill-border);
+    background: var(--hero-pill-bg);
+    padding: 0.27rem 0.62rem;
+    border-radius: 999px;
+}
+
+[data-testid="stSidebar"] > div:first-child {
+    border-right: 1px solid rgba(148, 163, 184, 0.24);
+    padding-top: 0.5rem;
+}
+
+[data-testid="stSidebar"] .stButton > button {
+    border-radius: 10px;
+}
+
+[data-testid="stSidebar"] {
+    min-width: 250px;
+    max-width: 250px;
+}
+
+.stTextInput > div > div,
+.stSelectbox > div[data-baseweb="select"] > div,
+.stTextArea textarea {
+    border-radius: 12px !important;
+    border: 1px solid var(--border-color) !important;
+    background: rgba(255, 255, 255, 0.52) !important;
+}
+
+.stTextInput > div > div:focus-within,
+.stSelectbox > div[data-baseweb="select"] > div:focus-within,
+.stTextArea textarea:focus {
+    border-color: rgba(99, 102, 241, 0.8) !important;
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18) !important;
+}
+
+.stButton > button[kind="secondary"] {
+    background: rgba(99, 102, 241, 0.1) !important;
+    color: #C7D2FE !important;
+    border: 1px solid rgba(99, 102, 241, 0.35) !important;
+    box-shadow: none !important;
+}
+
+.news-card {
+    border-radius: 14px;
+    border: 1px solid var(--border-color);
+    box-shadow: 0 8px 18px var(--shadow);
+}
+
+.news-title {
+    font-size: 1.08rem;
+}
+
+.kpi-card {
+    border-radius: 14px;
+    box-shadow: 0 10px 20px var(--shadow);
+}
+
+.stSuccess, .stInfo, .stWarning {
+    border-radius: 12px !important;
+}
+
+h2.gradient-header {
+    margin-top: 0.2rem;
+    margin-bottom: 0.2rem;
+}
+
+@media (max-width: 768px) {
+    .block-container {
+        padding-left: 0.75rem !important;
+        padding-right: 0.75rem !important;
+    }
+    .app-hero {
+        padding: 0.95rem;
+        border-radius: 14px;
+    }
+    .hero-title {
+        font-size: 1.45rem;
+    }
+    .hero-subtitle {
+        font-size: 0.92rem;
+    }
+}

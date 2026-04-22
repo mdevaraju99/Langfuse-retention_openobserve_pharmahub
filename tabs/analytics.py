@@ -15,6 +15,12 @@ import plotly.graph_objects as go
 import plotly.express as px
 import pandas as pd
 from datetime import datetime
+import json
+from pathlib import Path
+
+from utils.benchmark_runner import run_benchmark_suite
+from utils.feedback_tuning_report import load_feedback, build_report, write_report
+import config
 
 
 def show():
@@ -173,3 +179,92 @@ def show():
     if st.button("🔄 Force Refresh Analytics", use_container_width=True, type="primary"):
         st.cache_data.clear()
         st.rerun()
+
+    # ── Benchmarking / Capacity Report ───────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("### 🧪 RAG Benchmark Snapshot")
+    st.caption("Run retrieval/generation timing tests and store JSON artifacts for manager reporting.")
+
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        include_gen = st.checkbox("Include generation timing", value=True, key="bench_include_gen")
+    with c2:
+        if st.button("▶️ Run Benchmark Suite", use_container_width=True):
+            with st.spinner("Running benchmark suite..."):
+                rep = run_benchmark_suite(include_generation=include_gen, output_dir=config.BENCHMARK_OUTPUT_DIR)
+            st.success(f"Benchmark completed: {rep.get('report_file', '-')}")
+            st.rerun()
+
+    bench_dir = Path(config.BENCHMARK_OUTPUT_DIR)
+    if bench_dir.exists():
+        reports = sorted(bench_dir.glob("benchmark_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if reports:
+            latest = reports[0]
+            try:
+                payload = json.loads(latest.read_text(encoding="utf-8"))
+                b1, b2, b3, b4 = st.columns(4)
+                b1.metric("Docs", str(payload.get("documents", 0)))
+                b2.metric("Chunks", str(payload.get("total_chunks", 0)))
+                b3.metric("Retrieval avg", f"{payload.get('retrieval_avg_ms', 0)} ms")
+                b4.metric("Retrieval p95", f"{payload.get('retrieval_p95_ms', 0)} ms")
+                st.caption(f"Latest report: {latest}")
+                csv_path = payload.get("csv_file")
+                if csv_path:
+                    st.caption(f"CSV artifact: {csv_path}")
+                with st.expander("View benchmark samples", expanded=False):
+                    sdf = pd.DataFrame(payload.get("samples", []))
+                    if not sdf.empty:
+                        st.dataframe(sdf, use_container_width=True, hide_index=True)
+            except Exception:
+                st.info("Benchmark report exists but could not be parsed.")
+
+    # ── Feedback Tuning / Quality Gate ───────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("### ✅ Agentic RAG Quality Gate")
+    st.caption("Closed-loop learning snapshot using feedback + benchmark/case-eval thresholds.")
+
+    q1, q2 = st.columns(2)
+    with q1:
+        if st.button("🧠 Build Feedback Tuning Report", use_container_width=True):
+            rows = load_feedback()
+            rep = build_report(rows)
+            out = write_report(rep)
+            st.success(f"Tuning report written: {out}")
+            st.json(rep)
+    with q2:
+        if st.button("🔍 Evaluate Release Gate", use_container_width=True):
+            latest_bench = None
+            latest_eval = None
+            if bench_dir.exists():
+                bfiles = sorted(bench_dir.glob("benchmark_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+                efiles = sorted(bench_dir.glob("case_eval_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+                latest_bench = bfiles[0] if bfiles else None
+                latest_eval = efiles[0] if efiles else None
+
+            if not latest_bench or not latest_eval:
+                st.error("Run benchmark suite and case_study_eval first (artifacts missing).")
+            else:
+                b = json.loads(latest_bench.read_text(encoding="utf-8"))
+                e = json.loads(latest_eval.read_text(encoding="utf-8"))
+                retrieval_p95 = float(b.get("retrieval_p95_ms", 0))
+                case_pass_rate = float(e.get("pass_rate", 0))
+                pass_case = case_pass_rate >= float(config.QUALITY_MIN_CASE_PASS_RATE)
+                pass_p95 = retrieval_p95 <= float(config.QUALITY_MAX_RETRIEVAL_P95_MS)
+                status = pass_case and pass_p95
+                if status:
+                    st.success("Release gate PASSED.")
+                else:
+                    st.error("Release gate FAILED.")
+                st.json(
+                    {
+                        "benchmark_file": str(latest_bench),
+                        "case_eval_file": str(latest_eval),
+                        "case_pass_rate": case_pass_rate,
+                        "retrieval_p95_ms": retrieval_p95,
+                        "thresholds": {
+                            "QUALITY_MIN_CASE_PASS_RATE": float(config.QUALITY_MIN_CASE_PASS_RATE),
+                            "QUALITY_MAX_RETRIEVAL_P95_MS": float(config.QUALITY_MAX_RETRIEVAL_P95_MS),
+                        },
+                        "status": "PASS" if status else "FAIL",
+                    }
+                )

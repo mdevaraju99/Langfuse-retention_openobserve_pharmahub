@@ -1,32 +1,67 @@
-import os
-from pypdf import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from sentence_transformers import SentenceTransformer
 import streamlit as st
 import re
-from typing import List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional
+
+import config
 from .neo4j_manager import Neo4jManager
 from .entity_extractor import get_entity_extractor
+from .pdf_extract import (
+    extract_pdf_text_and_tables,
+    extract_pdf_media_assets,
+    load_media_manifest,
+    delete_media_assets,
+    clear_media_assets,
+)
 
-# Initialize model once
+# Initialize model once (lazy import: avoid pulling TF/keras; see app.py USE_TF=0)
 @st.cache_resource
 def get_embedding_model():
-    return SentenceTransformer('all-MiniLM-L6-v2')
+    import os
 
-def process_pdf(file):
+    os.environ.setdefault("USE_TF", "0")
+    os.environ.setdefault("USE_FLAX", "0")
+    from sentence_transformers import SentenceTransformer
+
+    return SentenceTransformer("all-MiniLM-L6-v2")
+
+def process_pdf_with_metadata(file) -> Tuple[str, Dict[str, int]]:
     """
-    Extracts text from a PDF file interactively uploaded in Streamlit.
+    Extracts text (and best-effort tables) from a PDF using PyMuPDF with pypdf fallback.
     """
     try:
-        file.seek(0)  # Reset pointer
-        reader = PdfReader(file)
-        text = ""
-        for page in reader.pages:
-            text += page.extract_text() or ""
-        return text
+        file.seek(0)
+        text, _pages, _engine, media_metadata = extract_pdf_text_and_tables(
+            file,
+            max_pages=config.RAG_MAX_PDF_PAGES,
+            max_chars=config.RAG_MAX_INGEST_CHARS,
+        )
+        return (
+            text or "",
+            media_metadata
+            or {
+                "table_count": 0,
+                "image_count": 0,
+                "formula_like_count": 0,
+                "chart_like_count": 0,
+            },
+        )
     except Exception as e:
         print(f"Error reading PDF: {e}")
-        return ""
+        return "", {
+            "table_count": 0,
+            "image_count": 0,
+            "formula_like_count": 0,
+            "chart_like_count": 0,
+        }
+
+
+def process_pdf(file) -> str:
+    """
+    Backward-compatible text-only API used by legacy debug scripts.
+    """
+    text, _meta = process_pdf_with_metadata(file)
+    return text
 
 def chunk_text(text, chunk_size=1000, chunk_overlap=200):
     """
@@ -81,10 +116,29 @@ def ingest_document(file, filename: str) -> Tuple[bool, str]:
     Full pipeline: Parse -> Chunk -> Embed -> Extract Entities -> Neo4j
     """
     try:
+        file.seek(0, 2)
+        size_bytes = file.tell()
+        file.seek(0)
+        max_bytes = int(config.RAG_MAX_PDF_MB) * 1024 * 1024
+        if size_bytes > max_bytes:
+            return False, (
+                f"File too large ({size_bytes // (1024 * 1024)} MB). "
+                f"Configured limit is {config.RAG_MAX_PDF_MB} MB (see RAG_MAX_PDF_MB)."
+            )
+
         # 1. Parse
-        text = process_pdf(file)
+        text, media_metadata = process_pdf_with_metadata(file)
         if not text:
             return False, "Could not extract text from PDF. The file might be empty or scanned (image-only)."
+        media_manifest = extract_pdf_media_assets(
+            file,
+            filename=filename,
+            max_pages=config.RAG_MAX_PDF_PAGES,
+            output_dir=config.MEDIA_ASSETS_DIR,
+            max_images=config.RAG_MAX_MEDIA_IMAGES,
+            max_tables=config.RAG_MAX_MEDIA_TABLE_PREVIEWS,
+            max_snippets=config.RAG_MAX_MEDIA_SNIPPETS,
+        )
             
         # 2. Detect document type
         doc_type = detect_document_type(text)
@@ -93,6 +147,12 @@ def ingest_document(file, filename: str) -> Tuple[bool, str]:
         chunks = chunk_text(text)
         if not chunks:
             return False, "Text extraction returned empty content after processing."
+
+        max_chunks = int(config.RAG_MAX_CHUNKS_PER_DOC)
+        truncated_note = ""
+        if len(chunks) > max_chunks:
+            chunks = chunks[:max_chunks]
+            truncated_note = f" (truncated to {max_chunks} chunks for scalability; adjust RAG_MAX_CHUNKS_PER_DOC if needed)"
         
         # 4. Embed
         embeddings = generate_embeddings(chunks)
@@ -104,13 +164,32 @@ def ingest_document(file, filename: str) -> Tuple[bool, str]:
         # 6. Neo4j
         neo = Neo4jManager()
         neo.create_vector_index()  # Ensure index exists
-        neo.add_document(filename, chunks, embeddings, doc_type, entities_per_chunk)
+        neo.add_document(
+            filename,
+            chunks,
+            embeddings,
+            doc_type,
+            entities_per_chunk,
+            media_metadata=media_metadata,
+        )
         neo.close()
         
         # Count entities
         total_entities = sum(len(extractor.get_entity_set(e)) for e in entities_per_chunk)
         
-        return True, f"Successfully processed {filename} ({doc_type}). Created {len(chunks)} chunks with {total_entities} unique entities."
+        return True, (
+            f"Successfully processed {filename} ({doc_type}). Created {len(chunks)} chunks with "
+            f"{total_entities} unique entities."
+            f" Tables: {int(media_metadata.get('table_count', 0))},"
+            f" Images: {int(media_metadata.get('image_count', 0))},"
+            f" Formula-like blocks: {int(media_metadata.get('formula_like_count', 0))}."
+            f" Chart-like mentions: {int(media_metadata.get('chart_like_count', 0))}."
+            f" Rich-media previews: tables={len(media_manifest.get('tables', []))},"
+            f" images={len(media_manifest.get('images', []))},"
+            f" formulas={len(media_manifest.get('formula_snippets', []))},"
+            f" charts={len(media_manifest.get('chart_snippets', []))}."
+            f"{truncated_note}"
+        )
     except Exception as e:
         return False, f"Ingestion Error: {str(e)}"
 
@@ -184,12 +263,17 @@ def get_rag_context(query: str, top_k: int = 15, max_docs: int = 5) -> str:
         neo = Neo4jManager()
         
         # Try primary vector search
-        context = neo.get_multi_doc_context(query_embedding, top_k=top_k, max_docs=max_docs)
+        context = neo.get_multi_doc_context(
+            query_embedding,
+            top_k=top_k,
+            max_docs=max_docs,
+            user_query=query,
+        )
         
         # If primary retrieval returns empty, try fallback hybrid approach
         if not context or len(context.strip()) < 100:
             print(f"Primary retrieval insufficient for query: {query[:50]}...")
-            context = neo._get_context_hybrid(top_k=top_k, max_docs=max_docs)
+            context = neo._get_context_hybrid(top_k=top_k, max_docs=max_docs, user_query=query)
         
         neo.close()
         
@@ -215,12 +299,23 @@ def get_documents_list() -> List[dict]:
         print(f"Error fetching documents: {e}")
         return []
 
+
+def get_document_media_assets(filename: str) -> Dict:
+    """
+    Load persisted rich-media assets for a document (if available).
+    """
+    try:
+        return load_media_manifest(filename, config.MEDIA_ASSETS_DIR) or {}
+    except Exception:
+        return {}
+
 def delete_document(filename: str) -> Tuple[bool, str]:
     """Delete a specific document"""
     try:
         neo = Neo4jManager()
         neo.delete_document(filename)
         neo.close()
+        delete_media_assets(filename, config.MEDIA_ASSETS_DIR)
         return True, f"Successfully deleted {filename}"
     except Exception as e:
         return False, f"Error deleting document: {e}"
@@ -231,6 +326,7 @@ def clear_all_documents() -> Tuple[bool, str]:
         neo = Neo4jManager()
         neo.clear_all_data()
         neo.close()
+        clear_media_assets(config.MEDIA_ASSETS_DIR)
         return True, "Successfully cleared all documents"
     except Exception as e:
         return False, f"Error clearing documents: {e}"

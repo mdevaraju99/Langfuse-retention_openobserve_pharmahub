@@ -7,7 +7,14 @@ import random
 from utils.data_fetchers import fetch_pharma_news
 from components.cards import news_card
 from utils.formatters import truncate_text
+from utils.spellcheck_util import normalize_query_text, suggest_for_text
 from datetime import datetime
+
+# Bias NewsAPI toward industry/clinical content (reduces zodiac / lifestyle noise on short queries).
+_NEWS_INDUSTRY_BIAS = (
+    "(pharmaceutical OR pharma OR biotech OR drug OR FDA OR vaccine OR medicine OR "
+    'healthcare OR oncology OR "clinical trial" OR therapy OR treatment OR patient)'
+)
 
 
 def is_pharma_related(query):
@@ -57,12 +64,38 @@ def show():
             label_visibility="collapsed"
         )
 
-    # Validate search query
-    if search_query and not is_pharma_related(search_query):
+    strict_pharma = st.checkbox(
+        "Strict pharma context (recommended)",
+        value=True,
+        help="Adds industry/clinical keywords to the NewsAPI query so short or ambiguous "
+        "terms (e.g. “cancer”) are less likely to return horoscope or generic lifestyle articles.",
+        key="news_strict_pharma_context",
+    )
+
+    raw_input = (search_query or "").strip()
+    normalized, auto_corrections = normalize_query_text(raw_input) if raw_input else ("", [])
+    if raw_input:
+        hints = suggest_for_text(raw_input)
+        extra = [h for h in hints if h not in auto_corrections]
+        if auto_corrections:
+            pairs = ", ".join([f"`{a}` → `{b}`" for a, b in auto_corrections])
+            st.caption(f"**Spell check:** auto-corrected {pairs} for search.")
+        elif extra:
+            pairs = ", ".join([f"`{a}` → `{b}`" for a, b in extra])
+            st.caption(f"**Spell hints:** {pairs}")
+
+    gate_text = normalized if raw_input else raw_input
+    if raw_input and not is_pharma_related(gate_text):
         st.warning("⚠️ sorry please ask pharma related questions")
         return
 
-    query = search_query if search_query else "pharmaceutical drug"
+    if raw_input:
+        if strict_pharma:
+            query = f"({normalized}) AND {_NEWS_INDUSTRY_BIAS}"
+        else:
+            query = normalized
+    else:
+        query = "pharmaceutical drug"
 
     # Reset shuffle seed when query changes
     if search_query != st.session_state.last_news_query:
@@ -120,22 +153,27 @@ def show():
             url=url
         )
 
-    # Navigation buttons
+    # Navigation buttons (fixed grid so alignment does not jump)
     st.markdown("<br>", unsafe_allow_html=True)
-    col_prev, col_refresh, col_next = st.columns([1, 2, 1])
+    nav_container = st.container()
+    with nav_container:
+        col_prev, col_refresh, col_next = st.columns(3)
 
-    with col_prev:
-        if seed > 0:
-            if st.button("⬅️ Previous Set", use_container_width=True):
+        with col_prev:
+            if st.button(
+                "⬅️ Previous Set",
+                use_container_width=True,
+                disabled=(seed == 0),
+            ):
                 st.session_state.news_shuffle_seed = max(0, seed - 1)
                 st.rerun()
 
-    with col_refresh:
-        if st.button("🔄 Show Different News", use_container_width=True, type="primary"):
-            st.session_state.news_shuffle_seed = seed + 1
-            st.rerun()
+        with col_refresh:
+            if st.button("🔄 Show Different News", use_container_width=True, type="primary"):
+                st.session_state.news_shuffle_seed = seed + 1
+                st.rerun()
 
-    with col_next:
-        if st.button("Next Set ➡️", use_container_width=True):
-            st.session_state.news_shuffle_seed = seed + 1
-            st.rerun()
+        with col_next:
+            if st.button("Next Set ➡️", use_container_width=True):
+                st.session_state.news_shuffle_seed = seed + 1
+                st.rerun()

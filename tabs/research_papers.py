@@ -4,6 +4,7 @@ Research Papers Page
 import streamlit as st
 from utils.data_fetchers import fetch_research_papers
 from components.cards import paper_card
+from utils.spellcheck_util import normalize_query_text, suggest_for_text
 
 
 def show():
@@ -39,7 +40,19 @@ def show():
         st.session_state.papers_page = 1
         st.session_state.last_papers_query = search_query
 
-    query = search_query if search_query else "pharmaceutical drug development"
+    raw_input = (search_query or "").strip()
+    normalized, auto_corrections = normalize_query_text(raw_input) if raw_input else ("", [])
+    if raw_input:
+        hints = suggest_for_text(raw_input)
+        extra = [h for h in hints if h not in auto_corrections]
+        if auto_corrections:
+            pairs = ", ".join([f"`{a}` → `{b}`" for a, b in auto_corrections])
+            st.caption(f"**Spell check:** auto-corrected {pairs} for PubMed search.")
+        elif extra:
+            pairs = ", ".join([f"`{a}` → `{b}`" for a, b in extra])
+            st.caption(f"**Spell hints:** {pairs}")
+
+    query = normalized if raw_input else "pharmaceutical drug development"
     current_page = st.session_state.papers_page
 
     # Page indicator
@@ -78,25 +91,30 @@ def show():
             url=url
         )
     
-    # Navigation buttons
+    # Navigation buttons (fixed grid so alignment does not jump)
     st.markdown("<br>", unsafe_allow_html=True)
-    col_prev, col_refresh, col_next = st.columns([1, 2, 1])
-    
-    with col_prev:
-        if current_page > 1:
-            if st.button("⬅️ Previous", use_container_width=True):
+    nav_container = st.container()
+    with nav_container:
+        col_prev, col_refresh, col_next = st.columns(3)
+        
+        with col_prev:
+            if st.button(
+                "⬅️ Previous",
+                use_container_width=True,
+                disabled=(current_page <= 1),
+            ):
                 st.session_state.papers_page -= 1
                 st.cache_data.clear()
                 st.rerun()
-    
-    with col_refresh:
-        if st.button("🔄 Refresh / Next Page", use_container_width=True, type="primary"):
-            st.session_state.papers_page += 1
-            st.cache_data.clear()
-            st.rerun()
-    
-    with col_next:
-        if st.button("Next ➡️", use_container_width=True):
-            st.session_state.papers_page += 1
-            st.cache_data.clear()
-            st.rerun()
+        
+        with col_refresh:
+            if st.button("🔄 Refresh / Next Page", use_container_width=True, type="primary"):
+                st.session_state.papers_page += 1
+                st.cache_data.clear()
+                st.rerun()
+        
+        with col_next:
+            if st.button("Next ➡️", use_container_width=True):
+                st.session_state.papers_page += 1
+                st.cache_data.clear()
+                st.rerun()

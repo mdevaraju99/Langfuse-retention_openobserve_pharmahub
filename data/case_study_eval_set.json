@@ -1,0 +1,17 @@
+[
+  {
+    "id": "cs_001",
+    "question": "What is the primary endpoint and timeframe discussed in the uploaded trial materials?",
+    "must_include_any": ["primary endpoint", "week", "source", ".pdf"]
+  },
+  {
+    "id": "cs_002",
+    "question": "Summarize key adverse events and classify them by severity.",
+    "must_include_any": ["adverse", "safety", "severity", "source", ".pdf"]
+  },
+  {
+    "id": "cs_003",
+    "question": "Compare planned protocol outcomes with reported results.",
+    "must_include_any": ["compare", "protocol", "results", "source", ".pdf"]
+  }
+]
