@@ -4,7 +4,12 @@ Clinical Trials Page — uses client-side shuffle rotation for refresh variety
 import streamlit as st
 import random
 from utils.data_fetchers import fetch_clinical_trials
-import pandas as pd
+from utils.pharma_guardrails import (
+    guardrail_enabled,
+    enrich_clinical_trials_query,
+    user_search_allowed,
+)
+from utils.spellcheck_util import normalize_query_text, suggest_for_text
 
 
 def show():
@@ -34,8 +39,33 @@ def show():
             index=1,
             label_visibility="collapsed"
         )
-    
-    query = search_query if search_query else "cancer"
+
+    raw_input = (search_query or "").strip()
+    normalized, auto_corrections = normalize_query_text(raw_input) if raw_input else ("", [])
+    if raw_input:
+        hints = suggest_for_text(raw_input)
+        if hints:
+            hint_str = ", ".join([f"`{a}` -> `{b}`" for a, b in hints[:8]])
+            st.caption(f"Spell hints: {hint_str}")
+        if auto_corrections and normalized and normalized.lower() != raw_input.lower():
+            st.caption(f"Using normalized query: `{normalized}`")
+
+    if raw_input and not user_search_allowed(raw_input, normalized):
+        st.warning(
+            f"**`{raw_input}`** is **not** treated as a pharmaceutical or clinical search term. "
+            "It does not match our in-domain vocabulary (conditions, drugs, sponsors, trial concepts). "
+            "ClinicalTrials.gov search is not run on that word while **Pharma relevance** is on."
+        )
+        st.info(
+            "**Try:** diabetes, breast cancer, pembrolizumab, NCT number — "
+            "or turn off **Pharma relevance (all modules)** in the sidebar."
+        )
+        return
+
+    query = normalized if normalized else (search_query if search_query else "cancer")
+    query = enrich_clinical_trials_query(query)
+    if guardrail_enabled():
+        st.caption("ClinicalTrials.gov query includes a pharma / intervention scope clause.")
 
     # Reset shuffle seed when query changes
     if search_query != st.session_state.last_trials_query:

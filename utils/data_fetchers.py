@@ -96,34 +96,93 @@ def fetch_research_papers(query: str = "pharmaceutical", max_results: int = 10, 
 
 
 @st.cache_data(ttl=config.CACHE_TTL["drug_info"])
-def fetch_drug_info(drug_name: str) -> List[Dict[str, Any]]:
+def fetch_drug_info(drug_name: str, suppress_errors: bool = False) -> List[Dict[str, Any]]:
     """Fetch drug information from OpenFDA"""
     endpoint = f"{config.OPENFDA_BASE}/label.json"
     
     params = {
-        "search": f'openfda.brand_name:"{drug_name}" OR openfda.generic_name:"{drug_name}"',
+        # Include substance_name so abbreviations / chemistry-oriented names
+        # (for example MDA/MDMA-style inputs) are not missed by brand+generic-only search.
+        "search": (
+            f'openfda.brand_name:"{drug_name}" '
+            f'OR openfda.generic_name:"{drug_name}" '
+            f'OR openfda.substance_name:"{drug_name}"'
+        ),
         "limit": 5
     }
     
     if config.OPENFDA_KEY:
         params["api_key"] = config.OPENFDA_KEY
     
-    response = APIClient.make_request(endpoint, params=params)
+    response = APIClient.make_request(endpoint, params=params, suppress_errors=suppress_errors)
     
     if response and "results" in response:
-        drugs = []
-        for result in response["results"]:
-            openfda = result.get("openfda", {})
-            drugs.append({
-                "brand_name": openfda.get("brand_name", ["N/A"])[0] if openfda.get("brand_name") else "N/A",
-                "generic_name": openfda.get("generic_name", ["N/A"])[0] if openfda.get("generic_name") else "N/A",
-                "manufacturer": openfda.get("manufacturer_name", ["N/A"])[0] if openfda.get("manufacturer_name") else "N/A",
-                "purpose": result.get("purpose", ["N/A"])[0] if result.get("purpose") else "N/A",
-                "indications": result.get("indications_and_usage", ["N/A"])[0] if result.get("indications_and_usage") else "N/A",
-                "warnings": result.get("warnings", ["N/A"])[0] if result.get("warnings") else "N/A",
-                "route": openfda.get("route", ["N/A"])[0] if openfda.get("route") else "N/A"
-            })
-        return drugs
+        return _parse_drug_results(response["results"])
+    return []
+
+
+def _parse_drug_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    drugs: List[Dict[str, Any]] = []
+    for result in results:
+        openfda = result.get("openfda", {})
+        drugs.append({
+            "brand_name": openfda.get("brand_name", ["N/A"])[0] if openfda.get("brand_name") else "N/A",
+            "generic_name": openfda.get("generic_name", ["N/A"])[0] if openfda.get("generic_name") else "N/A",
+            "manufacturer": openfda.get("manufacturer_name", ["N/A"])[0] if openfda.get("manufacturer_name") else "N/A",
+            "purpose": result.get("purpose", ["N/A"])[0] if result.get("purpose") else "N/A",
+            "indications": result.get("indications_and_usage", ["N/A"])[0] if result.get("indications_and_usage") else "N/A",
+            "warnings": result.get("warnings", ["N/A"])[0] if result.get("warnings") else "N/A",
+            "route": openfda.get("route", ["N/A"])[0] if openfda.get("route") else "N/A"
+        })
+    return drugs
+
+
+@st.cache_data(ttl=config.CACHE_TTL["drug_info"])
+def fetch_drug_info_relaxed(
+    drug_name: str,
+    suppress_errors: bool = True,
+    per_query_limit: int = 25,
+    max_total: int = 40,
+) -> List[Dict[str, Any]]:
+    """
+    Relaxed fallback search for near-miss spellings.
+    Uses prefix wildcard against brand/generic names.
+    """
+    token = (drug_name or "").strip().lower()
+    if len(token) < 2:
+        return []
+
+    endpoint = f"{config.OPENFDA_BASE}/label.json"
+    seen = set()
+    collected: List[Dict[str, Any]] = []
+    prefix_lens = (5, 4, 3, 2) if len(token) >= 5 else (4, 3, 2)
+    for prefix_len in prefix_lens:
+        if len(token) < prefix_len:
+            continue
+        prefix = token[:prefix_len]
+        params = {
+            "search": (
+                f'openfda.brand_name:{prefix}* '
+                f'OR openfda.generic_name:{prefix}* '
+                f'OR openfda.substance_name:{prefix}*'
+            ),
+            "limit": min(per_query_limit, 50),
+        }
+        if config.OPENFDA_KEY:
+            params["api_key"] = config.OPENFDA_KEY
+        response = APIClient.make_request(endpoint, params=params, suppress_errors=suppress_errors)
+        if not response or "results" not in response:
+            continue
+        for d in _parse_drug_results(response["results"]):
+            key = (d.get("brand_name", ""), d.get("generic_name", ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            collected.append(d)
+        if len(collected) >= max_total:
+            break
+    if collected:
+        return collected
     return []
 
 

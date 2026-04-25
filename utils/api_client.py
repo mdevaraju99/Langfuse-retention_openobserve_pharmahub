@@ -16,7 +16,8 @@ class APIClient:
         url: str,
         params: Optional[Dict[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
-        method: str = "GET"
+        method: str = "GET",
+        suppress_errors: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """
         Make HTTP request with retry logic
@@ -54,27 +55,33 @@ class APIClient:
                 if attempt < MAX_RETRIES - 1:
                     time.sleep(2 ** attempt)  # Exponential backoff
                     continue
-                st.error("⏱️ Request timed out. Please try again later.")
+                if not suppress_errors:
+                    st.error("⏱️ Request timed out. Please try again later.")
                 return None
                 
             except requests.exceptions.HTTPError as e:
                 if response.status_code == 429:  # Rate limit
-                    st.warning("⚠️ Rate limit reached. Please wait a moment.")
+                    if not suppress_errors:
+                        st.warning("⚠️ Rate limit reached. Please wait a moment.")
                     time.sleep(5)
                     if attempt < MAX_RETRIES - 1:
                         continue
                 elif response.status_code == 404:
-                    st.error("❌ Resource not found.")
+                    if not suppress_errors:
+                        st.error("❌ Resource not found.")
                 else:
-                    st.error(f"❌ HTTP Error: {e}")
+                    if not suppress_errors:
+                        st.error(f"❌ HTTP Error: {e}")
                 return None
                 
             except requests.exceptions.ConnectionError:
-                st.error("🌐 Connection error. Please check your internet connection.")
+                if not suppress_errors:
+                    st.error("🌐 Connection error. Please check your internet connection.")
                 return None
                 
             except Exception as e:
-                st.error(f"❌ Unexpected error: {str(e)}")
+                if not suppress_errors:
+                    st.error(f"❌ Unexpected error: {str(e)}")
                 return None
         
         return None

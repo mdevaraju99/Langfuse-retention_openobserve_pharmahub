@@ -1,15 +1,16 @@
 import streamlit as st
 
 import config
+from utils.pharma_guardrails import guardrail_enabled
 from utils.agentic_rag import complete_groq_chat, stream_groq_chat
 from utils.spellcheck_util import suggest_for_text
 
 
-GENERAL_SYSTEM_PROMPT = """You are an expert pharmaceutical knowledge assistant with deep expertise in drugs, diseases, clinical trial phases, and regulatory topics.
+GENERAL_SYSTEM_PROMPT_STRICT = """You are an expert pharmaceutical knowledge assistant with deep expertise in drugs, diseases, clinical trial phases, and regulatory topics.
 
 STRICT DOMAIN RULE:
 - You ONLY answer questions related to the pharmaceutical domain (drugs, clinical trials, healthcare research, regulatory affairs, biotech, etc.).
-- If the user asks a question that is NOT related to the pharmaceutical domain, you MUST politely refuse and say exactly: "sorry please ask pharma related questions".
+- If the user asks a question that is NOT related to the pharmaceutical domain, politely decline using this message: "{domain_refusal_text}".
 - Do not provide any non-pharma information, even if you know it.
 
 INSTRUCTIONS:
@@ -19,9 +20,25 @@ INSTRUCTIONS:
 4. Be concise, professional, and helpful.
 5. Use emojis where appropriate: 🔬 Research, 💊 Drugs, 🏥 Clinical, ⚖️ Regulatory."""
 
+GENERAL_SYSTEM_PROMPT_OPEN = """You are a helpful assistant. You have strong expertise in drugs, clinical trials, regulatory affairs, and biotech, and you should emphasize accurate, well-sourced-style reasoning when the topic touches healthcare.
+
+INSTRUCTIONS:
+1. Answer the user's question directly; you are not restricted to pharma-only topics while **Pharma relevance** is off in the app sidebar.
+2. Use rich markdown formatting: headers (##, ###), bullet points, and **bold**.
+3. For medical or treatment questions, include: "Please consult healthcare professionals for medical advice."
+4. Be concise, professional, and helpful.
+5. Use emojis where appropriate: 🔬 Research, 💊 Drugs, 🏥 Clinical, ⚖️ Regulatory."""
+
 
 def _build_general_messages(question: str, chat_history: list) -> list:
-    messages = [{"role": "system", "content": GENERAL_SYSTEM_PROMPT}]
+    enforce_domain = bool(getattr(config, "CHATBOT_ENFORCE_DOMAIN_ONLY", True)) and guardrail_enabled()
+    if enforce_domain:
+        prompt = GENERAL_SYSTEM_PROMPT_STRICT.format(
+            domain_refusal_text=config.CHATBOT_DOMAIN_REFUSAL_TEXT,
+        )
+    else:
+        prompt = GENERAL_SYSTEM_PROMPT_OPEN
+    messages = [{"role": "system", "content": prompt}]
     for msg in chat_history[-10:]:
         messages.append(msg)
     messages.append({"role": "user", "content": question})

@@ -3,10 +3,12 @@ Events Page - Improved Dynamic Events with Multi-Source Fetching
 """
 import streamlit as st
 from utils.data_fetchers import fetch_pharma_news_multi_query
+from utils.pharma_guardrails import guardrail_enabled
 from components.cards import news_card
 from datetime import datetime
 from utils.formatters import truncate_text
 import re
+import config
 
 def extract_dates_from_text(text):
     """
@@ -34,7 +36,7 @@ def extract_dates_from_text(text):
     
     return found_dates, has_future_year
 
-def smart_event_filter(articles, event_type="all", include_past=False):
+def smart_event_filter(articles, event_type="all", include_past=False, require_pharma=True):
     """
     Advanced filtering for actual events with multi-criteria scoring.
     
@@ -42,48 +44,12 @@ def smart_event_filter(articles, event_type="all", include_past=False):
     include_past: If True, also include recent past events
     """
     
-    # Strong event indicators (high confidence these are actual events)
-    strong_event_keywords = {
-        "hackathon": [
-            "hackathon", "hack-a-thon", "coding competition", "coding challenge",
-            "innovation challenge", "dev challenge", "datathon"
-        ],
-        "conference": [
-            "conference", "summit", "symposium", "congress", "expo", "forum",
-            "annual meeting", "world congress", "international conference"
-        ],
-        "workshop": [
-            "workshop", "webinar", "training session", "masterclass", "bootcamp",
-            "short course", "hands-on training", "certification course"
-        ]
-    }
-    
-    # Action-oriented keywords (suggests it's an event you can attend/participate)
-    action_keywords = [
-        "register", "registration", "deadline", "apply", "submit", "join us",
-        "attend", "participate", "enroll", "spots available", "virtual event",
-        "in-person event", "hybrid event"
-    ]
-    
-    # Date-related keywords (confirms it's scheduled)
-    date_keywords = [
-        "scheduled for", "taking place", "to be held", "dates announced", 
-        "event date", "happening on", "2026", "2027"
-    ]
-    
-    # EXCLUDE these - they're news, not events
-    exclusion_keywords = [
-        "market report", "market analysis", "stock", "shares", "earnings",
-        "quarterly report", "revenue", "profit", "financial results",
-        "crime", "police", "lawsuit", "litigation", "cagr", "forecast", 
-        "market size", "merger", "acquisition", "dividend", "price target"
-    ]
-    
-    # Pharma-specific keywords to ensure relevance
-    pharma_keywords = [
-        "pharmaceutical", "pharma", "biotech", "drug", "clinical", "fda", 
-        "regulatory", "medicine", "therapy", "healthcare", "life sciences"
-    ]
+    # Config-driven heuristics to avoid hardcoded filter logic in this module.
+    strong_event_keywords = getattr(config, "EVENT_STRONG_KEYWORDS", {}) or {}
+    action_keywords = list(getattr(config, "EVENT_ACTION_KEYWORDS", []) or [])
+    date_keywords = list(getattr(config, "EVENT_DATE_KEYWORDS", []) or [])
+    exclusion_keywords = list(getattr(config, "EVENT_EXCLUSION_KEYWORDS", []) or [])
+    pharma_keywords = list(getattr(config, "EVENT_PHARMA_KEYWORDS", []) or [])
     
     scored_events = []
     current_date = datetime.now()
@@ -109,13 +75,14 @@ def smart_event_filter(articles, event_type="all", include_past=False):
         
         # 2. CHECK PHARMA RELEVANCE
         pharma_score = sum(1 for kw in pharma_keywords if kw in combined_text)
-        if pharma_score == 0:
-            continue  # Must be pharma-related
+        if require_pharma and pharma_score == 0:
+            continue  # Must be pharma-related when guardrail is on
         score += pharma_score * 2
         
         # 3. CHECK EVENT TYPE MATCH
         if event_type != "all":
-            type_match = sum(1 for kw in strong_event_keywords[event_type] if kw in combined_text)
+            typed = strong_event_keywords.get(event_type, [])
+            type_match = sum(1 for kw in typed if kw in combined_text)
             if type_match == 0:
                 continue  # Must match the event type
             score += type_match * 10  # High weight
@@ -162,7 +129,7 @@ def smart_event_filter(articles, event_type="all", include_past=False):
             pass
         
         # 8. MINIMUM SCORE THRESHOLD
-        if score >= 15:  # Adjust threshold as needed
+        if score >= int(getattr(config, "EVENT_MIN_SCORE", 15)):
             article["_score"] = score
             article["_metadata"] = event_metadata
             scored_events.append(article)
@@ -214,9 +181,10 @@ def show():
             
             # Apply smart filtering (Upcoming only)
             future_events, past_events = smart_event_filter(
-                unique_articles, 
+                unique_articles,
                 event_type=event_type,
-                include_past=False
+                include_past=False,
+                require_pharma=guardrail_enabled(),
             )
         
         # Display results
@@ -261,20 +229,20 @@ def show():
     with tab1:
         st.markdown("### 💻 Pharma & Healthcare Hackathons")
         # Combined Master Query
-        hackathon_query = '(hackathon OR "coding competition" OR "innovation challenge" OR datathon) AND ("pharmaceutical" OR "biotech" OR "healthcare" OR "drug discovery")'
+        hackathon_query = str(getattr(config, "EVENT_QUERY_HACKATHON", "")).strip()
         fetch_and_display(hackathon_query, "hackathon", "hackathons", "🚀")
     
     # TAB 2: CONFERENCES
     with tab2:
         st.markdown("### 🎤 Industry Conferences & Summits")
         # Combined Master Query
-        conference_query = '(conference OR summit OR congress OR symposium) AND ("pharmaceutical" OR "biotech" OR "clinical trials") AND (2026 OR 2027)'
+        conference_query = str(getattr(config, "EVENT_QUERY_CONFERENCE", "")).strip()
         fetch_and_display(conference_query, "conference", "conferences", "🗓️")
     
     # TAB 3: WORKSHOPS
     with tab3:
         st.markdown("### 🎓 Training, Workshops & Webinars")
         # Combined Master Query
-        workshop_query = '(workshop OR webinar OR training OR "certification course") AND (FDA OR "regulatory affairs" OR "clinical trials" OR GMP)'
+        workshop_query = str(getattr(config, "EVENT_QUERY_WORKSHOP", "")).strip()
         fetch_and_display(workshop_query, "workshop", "workshops", "🎓")
 

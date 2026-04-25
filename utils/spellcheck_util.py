@@ -113,3 +113,39 @@ def normalize_query_text(text: str) -> tuple[str, list[tuple[str, str]]]:
 
     normalized = " ".join(out_tokens).strip()
     return normalized, corrections
+
+
+def candidates_for_tokens(text: str, max_per_token: int = 12) -> list[str]:
+    """
+    Return distinct spelling candidates for each non-dictionary token (for "Did you mean" lists).
+    """
+    if not text or not text.strip():
+        return []
+
+    spell = _get_spell()
+    out: list[str] = []
+    seen: set[str] = set()
+
+    for raw in text.replace("\n", " ").split():
+        token = raw.strip().strip(".,;:!?()[]'\"")
+        if len(token) < 3 or token.isupper():
+            continue
+        w = token.lower()
+        if w in spell:
+            continue
+        try:
+            cands = spell.candidates(w)
+        except Exception:
+            cands = None
+        if not cands:
+            cand = spell.correction(w)
+            cands = {cand} if cand and cand != w else set()
+        for c in list(cands)[:max_per_token]:
+            if not c or c == w:
+                continue
+            if c.lower() not in seen:
+                seen.add(c.lower())
+                out.append(c)
+            if len(out) >= max_per_token * 2:
+                break
+    return out

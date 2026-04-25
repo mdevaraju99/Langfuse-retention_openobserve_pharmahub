@@ -3,6 +3,7 @@ Company News Page
 """
 import streamlit as st
 from utils.data_fetchers import fetch_company_news
+from utils.pharma_guardrails import guardrail_enabled, filter_pharma_relevant_news
 from components.cards import news_card
 from utils.formatters import truncate_text
 from datetime import datetime
@@ -39,6 +40,15 @@ def show():
     # Fetch company news
     with st.spinner(f"🔍 Fetching news for {selected_company}..."):
         articles = fetch_company_news(company=selected_company, page_size=page_size)
+
+    raw_n = len(articles)
+    articles = filter_pharma_relevant_news(articles)
+    if guardrail_enabled() and raw_n and not articles:
+        st.warning(
+            f"No articles for **{selected_company}** matched the pharma relevance filter. "
+            "Try another company or turn off **Pharma relevance (all modules)** in the sidebar."
+        )
+        return
     
     if not articles:
         st.warning(f"⚠️ No recent news found for {selected_company}. Try another company or check your API key.")
@@ -52,7 +62,8 @@ def show():
         """)
         return
     
-    st.success(f"✅ Found {len(articles)} articles about {selected_company}")
+    note = " (pharma-filtered)" if guardrail_enabled() else ""
+    st.success(f"✅ Found {len(articles)} articles about {selected_company}{note}")
     
     # Display articles
     for article in articles:
@@ -82,7 +93,7 @@ def show():
     
     # Quick company buttons
     st.markdown("### 🔗 Quick Access")
-    top_companies = ["Pfizer", "Moderna", "Johnson & Johnson", "AstraZeneca", "Dr. Reddy's Laboratories", "Sun Pharma"]
+    top_companies = [c for c in config.COMPANY_NEWS_QUICK_ACCESS if c in companies] or companies[:6]
     cols = st.columns(3)
     for idx, company in enumerate(top_companies):
         with cols[idx % 3]:

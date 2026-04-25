@@ -3,6 +3,11 @@ Research Papers Page
 """
 import streamlit as st
 from utils.data_fetchers import fetch_research_papers
+from utils.pharma_guardrails import (
+    guardrail_enabled,
+    enrich_pubmed_query,
+    user_search_allowed,
+)
 from components.cards import paper_card
 from utils.spellcheck_util import normalize_query_text, suggest_for_text
 
@@ -52,11 +57,27 @@ def show():
             pairs = ", ".join([f"`{a}` → `{b}`" for a, b in extra])
             st.caption(f"**Spell hints:** {pairs}")
 
+    if raw_input and not user_search_allowed(raw_input, normalized):
+        st.warning(
+            f"**`{raw_input}`** is **not** treated as a pharmaceutical or clinical search term. "
+            "It does not match our in-domain vocabulary (drugs, diseases, mechanisms, trials, biotech). "
+            "PubMed search is not run on that word while **Pharma relevance** is on."
+        )
+        st.info(
+            "**Try:** immunotherapy, metformin, cardiovascular, randomized trial — "
+            "or turn off **Pharma relevance (all modules)** in the sidebar."
+        )
+        return
+
     query = normalized if raw_input else "pharmaceutical drug development"
+    query = enrich_pubmed_query(query)
     current_page = st.session_state.papers_page
 
     # Page indicator
-    st.caption(f"📄 Page {current_page} — sorted by most recent")
+    st.caption(
+        f"📄 Page {current_page} — sorted by most recent"
+        + (" — PubMed query includes a pharma scope clause" if guardrail_enabled() else "")
+    )
     
     # Fetch papers
     with st.spinner("🔍 Searching PubMed database..."):

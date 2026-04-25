@@ -63,6 +63,33 @@ def process_pdf(file) -> str:
     text, _meta = process_pdf_with_metadata(file)
     return text
 
+
+def check_neo4j_connection() -> Tuple[bool, str]:
+    """
+    Preflight Neo4j connection for ingestion/query operations.
+    Returns (ok, message) with actionable guidance on failure.
+    """
+    neo: Optional[Neo4jManager] = None
+    try:
+        neo = Neo4jManager()
+        if not neo.driver:
+            return (
+                False,
+                "Neo4j driver could not be created. Check NEO4J_URI/NEO4J_USER/NEO4J_PASSWORD.",
+            )
+        neo.verify_connectivity()
+        return True, "Neo4j connection successful."
+    except Exception as e:
+        return (
+            False,
+            "Neo4j is not reachable. Start Neo4j and verify credentials in `.env` "
+            f"(NEO4J_URI={config.NEO4J_URI}, NEO4J_USER={config.NEO4J_USER}). "
+            f"Details: {e}",
+        )
+    finally:
+        if neo:
+            neo.close()
+
 def chunk_text(text, chunk_size=1000, chunk_overlap=200):
     """
     Splits text into chunks.
@@ -116,6 +143,10 @@ def ingest_document(file, filename: str) -> Tuple[bool, str]:
     Full pipeline: Parse -> Chunk -> Embed -> Extract Entities -> Neo4j
     """
     try:
+        ok, conn_msg = check_neo4j_connection()
+        if not ok:
+            return False, f"Ingestion Error: {conn_msg}"
+
         file.seek(0, 2)
         size_bytes = file.tell()
         file.seek(0)

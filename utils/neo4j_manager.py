@@ -457,13 +457,8 @@ class Neo4jManager:
         context_parts = []
         seen_texts = set()
         
-        # Common clinical trial keywords
-        clinical_keywords = [
-            'primary endpoint', 'CDR-SB', 'ADAS-Cog', 'ARIA-E', 'ARIA-H',
-            'mechanism', 'amyloid', 'antibody', 'efficacy', 'safety',
-            'adverse', 'dose', 'administration', 'dosing', 'protocol',
-            'baseline', 'Week 72', 'efficacy', 'results', 'outcome'
-        ]
+        # Config-driven fallback keywords (kept customizable in config/.env)
+        clinical_keywords = list(getattr(config, "RAG_HYBRID_FALLBACK_KEYWORDS", []) or [])
 
         query_terms = self._keywords_from_query(user_query, max_terms=12)
         # Prefer longer / more specific tokens first

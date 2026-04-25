@@ -415,11 +415,6 @@ a:hover {
     border-radius: 10px;
 }
 
-[data-testid="stSidebar"] {
-    min-width: 250px;
-    max-width: 250px;
-}
-
 .stTextInput > div > div,
 .stSelectbox > div[data-baseweb="select"] > div,
 .stTextArea textarea {

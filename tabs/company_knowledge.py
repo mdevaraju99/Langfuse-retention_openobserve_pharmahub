@@ -15,6 +15,7 @@ from utils.agentic_rag import (
 from utils.answer_validator import validate_answer
 from utils.feedback_store import append_feedback
 from utils.rag_pipeline import (
+    check_neo4j_connection,
     ingest_document,
     ingest_documents_batch,
     get_rag_context,
@@ -41,12 +42,12 @@ If the context is insufficient, say so explicitly and do not invent facts."""
 
 def show():
     st.markdown(
-        '<h2 class="gradient-header">🏢 Multi-Document Knowledge Base</h2>',
+        '<h2 class="gradient-header">🏢 Company Knowledge (Agentic RAG)</h2>',
         unsafe_allow_html=True,
     )
     st.markdown(
-        "Upload pharmaceutical PDFs and ask questions across them. "
-        "**New:** streaming replies, spell hints, optional **agentic retrieval**, richer PDF/table extraction, and explicit **capacity limits**."
+        "Upload pharma documents and ask grounded questions across them. "
+        "Answers are generated using an **Agentic RAG** flow with source-aware retrieval."
     )
 
     docs = get_documents_list()
@@ -66,20 +67,15 @@ def show():
         show_spell = st.checkbox("Spell-check hints on questions", value=True)
 
         st.markdown("---")
-        st.markdown("### 📏 Hub capacity (configured)")
-        st.markdown(
-            f"- Max PDF size: **{config.RAG_MAX_PDF_MB} MB**\n"
-            f"- Max pages indexed per PDF: **{config.RAG_MAX_PDF_PAGES}**\n"
-            f"- Max chunks stored per document: **{config.RAG_MAX_CHUNKS_PER_DOC}**\n"
-            f"- Max ingest characters (soft cap): **{config.RAG_MAX_INGEST_CHARS:,}**"
-        )
-        if docs:
-            total_chunks = sum(int(d.get("chunk_count") or 0) for d in docs)
-            st.metric("Documents in graph", len(docs))
-            st.metric("Total chunks (approx.)", total_chunks)
-
-        st.markdown("---")
         st.markdown("### 📂 Document Upload")
+        neo_ok, neo_msg = check_neo4j_connection()
+        if neo_ok:
+            st.caption("Neo4j status: connected")
+        else:
+            st.error(
+                "Neo4j status: not connected. Document processing is disabled until Neo4j is running."
+            )
+            st.caption(neo_msg)
 
         uploaded_files = st.file_uploader(
             "Upload PDF Documents",
@@ -88,7 +84,11 @@ def show():
             help="PDFs only. Tables are captured as text/markdown blocks when possible (PyMuPDF).",
         )
 
-        if uploaded_files and st.button("📥 Process Documents", use_container_width=True):
+        if uploaded_files and st.button(
+            "📥 Process Documents",
+            use_container_width=True,
+            disabled=not neo_ok,
+        ):
             with st.spinner(
                 f"Processing {len(uploaded_files)} document(s)... This may take 30–120 seconds."
             ):
@@ -113,54 +113,27 @@ def show():
 
             for idx, doc in enumerate(docs):
                 with st.expander(f"📄 {doc.get('filename', 'Unknown')}"):
-                    st.write(f"**Type:** {doc.get('doc_type', 'unknown')}")
                     st.write(f"**Uploaded:** {doc.get('upload_date', 'N/A')}")
-                    st.write(f"**Chunks:** {doc.get('chunk_count', 0)}")
-                    st.write(
-                        f"**Media:** tables={int(doc.get('table_count') or 0)}, "
-                        f"images={int(doc.get('image_count') or 0)}, "
-                        f"formula-like={int(doc.get('formula_like_count') or 0)}, "
-                        f"chart-like={int(doc.get('chart_like_count') or 0)}"
-                    )
-                    if st.checkbox(
-                        "Show rich-media previews",
-                        value=False,
-                        key=f"media_preview_{idx}",
-                    ):
+                    if st.checkbox("Show extracted previews", value=False, key=f"media_preview_{idx}"):
                         media = get_document_media_assets(doc.get("filename", ""))
                         if media:
-                            tabs = st.tabs(["Tables", "Images", "Formulas", "Charts"])
-                            with tabs[0]:
-                                trows = media.get("tables", [])[: int(config.RAG_MAX_MEDIA_TABLE_PREVIEWS)]
-                                if trows:
-                                    for t_i, t in enumerate(trows, start=1):
-                                        st.caption(f"Table {t_i} (page {t.get('page', '-')})")
-                                        st.markdown(t.get("markdown", ""))
-                                else:
-                                    st.caption("No table previews extracted.")
-                            with tabs[1]:
-                                imgs = media.get("images", [])[: int(config.RAG_MAX_MEDIA_IMAGES)]
-                                if imgs:
-                                    for im in imgs:
-                                        st.image(im.get("path", ""), caption=f"Page {im.get('page', '-')}")
-                                else:
-                                    st.caption("No image previews extracted.")
-                            with tabs[2]:
-                                formulas = media.get("formula_snippets", [])[: int(config.RAG_MAX_MEDIA_SNIPPETS)]
-                                if formulas:
-                                    for f in formulas:
-                                        st.markdown(f"- Page {f.get('page', '-')}: `{f.get('text', '')}`")
-                                else:
-                                    st.caption("No formula-like snippets detected.")
-                            with tabs[3]:
-                                charts = media.get("chart_snippets", [])[: int(config.RAG_MAX_MEDIA_SNIPPETS)]
-                                if charts:
-                                    for c in charts:
-                                        st.markdown(f"- Page {c.get('page', '-')}: {c.get('text', '')}")
-                                else:
-                                    st.caption("No chart/graph snippets detected.")
+                            trows = media.get("tables", [])[: int(config.RAG_MAX_MEDIA_TABLE_PREVIEWS)]
+                            imgs = media.get("images", [])[: int(config.RAG_MAX_MEDIA_IMAGES)]
+                            formulas = media.get("formula_snippets", [])[: int(config.RAG_MAX_MEDIA_SNIPPETS)]
+                            charts = media.get("chart_snippets", [])[: int(config.RAG_MAX_MEDIA_SNIPPETS)]
+                            st.caption(
+                                f"Tables: {len(trows)} | Images: {len(imgs)} | "
+                                f"Formula snippets: {len(formulas)} | Chart snippets: {len(charts)}"
+                            )
+                            if trows:
+                                st.markdown("**Table previews**")
+                                for t_i, t in enumerate(trows[:2], start=1):
+                                    st.caption(f"Table {t_i} (page {t.get('page', '-')})")
+                                    st.markdown(t.get("markdown", ""))
+                            if imgs:
+                                st.image(imgs[0].get("path", ""), caption=f"Preview image (page {imgs[0].get('page', '-')})")
                         else:
-                            st.caption("No rich-media preview manifest found yet for this document.")
+                            st.caption("No extracted previews available yet.")
 
                     if st.button("🗑️ Delete", key=f"del_{idx}", use_container_width=True):
                         success, msg = delete_document(doc["filename"])
@@ -187,42 +160,11 @@ def show():
         else:
             st.info("No documents uploaded yet. Upload PDFs above to get started!")
 
-        st.markdown("---")
-        st.markdown("### 🔍 Explore Graph")
-        st.markdown(
-            """
-Open [Neo4j Browser](http://localhost:7474) to visualize your knowledge graph.
-
-**Recommended Queries:**
-```cypher
-MATCH (d:Document) RETURN d LIMIT 25
-MATCH (e:Entity) RETURN e LIMIT 25
-MATCH (c1:Chunk)-[s:SIMILAR_TO]->(c2:Chunk) RETURN c1, s, c2 LIMIT 10
-```
-            """
-        )
-
     st.markdown("---")
 
     if not docs:
         st.info("👈 Please upload documents in the sidebar to start chatting.")
-        st.markdown(
-            """
-### 💡 What changed vs the original POC
-
-| Area | Before | Now |
-|------|--------|-----|
-| Answers | Appear all at once after spinner | Optional **token streaming** |
-| Retrieval | Mostly single-shot embedding search | Optional **agentic** rewrite + relevance gate + retry |
-| PDFs | `pypdf` text only | **PyMuPDF** + best-effort **table blocks** + size/page/chunk caps |
-| Quality of life | None | **Spell hints** on questions + **capacity** readout |
-
-### Example prompts (multi-doc)
-
-- “Compare inclusion criteria in protocol.pdf vs enrolled population in csr.pdf.”
-- “List serious adverse events mentioned across all uploaded documents with sources.”
-            """
-        )
+        st.markdown("This module is built for **Agentic RAG over uploaded pharmaceutical documents**.")
         return
 
     if "rag_chat_history" not in st.session_state:

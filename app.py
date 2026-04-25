@@ -28,6 +28,11 @@ if "theme" not in st.session_state:
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
+if "pharma_guardrail_enabled" not in st.session_state:
+    st.session_state.pharma_guardrail_enabled = bool(
+        getattr(config, "ENABLE_PHARMA_GUARDRAIL", True)
+    )
+
 # Load custom CSS with theme
 def load_css(theme):
     css_path = project_root / "styles" / "custom.css"
@@ -138,6 +143,15 @@ with st.sidebar:
         if st.button("☀️ Light", use_container_width=True, type="primary" if st.session_state.theme == "light" else "secondary"):
             st.session_state.theme = "light"
             st.rerun()
+
+    st.markdown("### 🛡️ Content scope")
+    st.checkbox(
+        "Pharma relevance (all modules)",
+        help="When on: news results are post-filtered for pharma/clinical keywords; PubMed and "
+        "ClinicalTrials searches add a pharma clause; Events require a pharma signal; Chatbot "
+        "stays domain-focused when CHATBOT_ENFORCE_DOMAIN_ONLY is enabled.",
+        key="pharma_guardrail_enabled",
+    )
     
     st.markdown("---")
     
