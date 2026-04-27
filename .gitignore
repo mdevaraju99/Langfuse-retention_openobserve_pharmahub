@@ -136,6 +136,9 @@ dmypy.json
 .DS_Store
 Thumbs.db
 
+# Next.js experiment (app is Streamlit-only)
+frontend_next/
+
 # Project specific
 *.log
 .env
