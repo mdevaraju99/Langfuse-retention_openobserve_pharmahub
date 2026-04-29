@@ -122,6 +122,15 @@ def fetch_drug_info(drug_name: str, suppress_errors: bool = False) -> List[Dict[
 
 
 def _parse_drug_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def pick_first(result: Dict[str, Any], keys: List[str]) -> str:
+        for k in keys:
+            values = result.get(k)
+            if values and isinstance(values, list):
+                text = str(values[0]).strip()
+                if text and text.upper() != "N/A":
+                    return text
+        return "N/A"
+
     drugs: List[Dict[str, Any]] = []
     for result in results:
         openfda = result.get("openfda", {})
@@ -132,7 +141,20 @@ def _parse_drug_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "purpose": result.get("purpose", ["N/A"])[0] if result.get("purpose") else "N/A",
             "indications": result.get("indications_and_usage", ["N/A"])[0] if result.get("indications_and_usage") else "N/A",
             "warnings": result.get("warnings", ["N/A"])[0] if result.get("warnings") else "N/A",
-            "route": openfda.get("route", ["N/A"])[0] if openfda.get("route") else "N/A"
+            "route": openfda.get("route", ["N/A"])[0] if openfda.get("route") else "N/A",
+            # Show advanced sections only when these are present in OpenFDA labels.
+            "dosage": pick_first(result, ["dosage_and_administration"]),
+            "side_effects": pick_first(result, ["adverse_reactions"]),
+            "interactions": pick_first(result, ["drug_interactions"]),
+            "contraindications": pick_first(result, ["contraindications"]),
+            "pregnancy_warning": pick_first(
+                result,
+                ["pregnancy", "pregnancy_or_breast_feeding", "use_in_specific_populations"],
+            ),
+            "alternatives": pick_first(
+                result,
+                ["clinical_pharmacology", "mechanism_of_action", "description"],
+            ),
         })
     return drugs
 
@@ -309,11 +331,12 @@ def fetch_analytics_data() -> Dict[str, Any]:
         "active_trials": active_trials,
         "recent_papers": recent_papers,
         "news_count": news_count,
+        "fetched_at": datetime.now().strftime("%d %b %Y, %I:%M %p"),
     }
 
 
 @st.cache_data(ttl=config.CACHE_TTL["analytics"])
-def fetch_trials_by_phase() -> Dict[str, int]:
+def fetch_trials_by_phase() -> Dict[str, Any]:
     """
     Get phase distribution of RECRUITING trials.
     'filter.phase' is NOT a valid ClinicalTrials.gov v2 parameter (causes 400).
@@ -359,6 +382,7 @@ def fetch_trials_by_phase() -> Dict[str, int]:
     if counts.get("Other/NA", 0) == 0:
         counts.pop("Other/NA", None)
 
+    counts["fetched_at"] = datetime.now().strftime("%d %b %Y, %I:%M %p")
     return counts
 
 
@@ -401,7 +425,12 @@ def fetch_therapeutic_area_data() -> Dict[str, Any]:
             int(p_resp.get("esearchresult", {}).get("count", 0)) if p_resp else 0
         )
 
-    return {"areas": areas, "trial_counts": trial_counts, "paper_counts": paper_counts}
+    return {
+        "areas": areas,
+        "trial_counts": trial_counts,
+        "paper_counts": paper_counts,
+        "fetched_at": datetime.now().strftime("%d %b %Y, %I:%M %p"),
+    }
 
 
 @st.cache_data(ttl=config.CACHE_TTL["analytics"])
@@ -445,4 +474,9 @@ def fetch_monthly_fda_approvals() -> Dict[str, Any]:
 
     months_labels = [v["label"] for v in month_buckets.values()]
     approval_counts = [v["count"] for v in month_buckets.values()]
-    return {"months": months_labels, "approvals": approval_counts}
+    return {
+        "months": months_labels,
+        "approvals": approval_counts,
+        "fetched_at": datetime.now().strftime("%d %b %Y, %I:%M %p"),
+        "sample_size": 1000,
+    }

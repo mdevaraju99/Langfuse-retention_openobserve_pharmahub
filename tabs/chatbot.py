@@ -40,7 +40,7 @@ def _build_general_messages(question: str, chat_history: list) -> list:
         prompt = GENERAL_SYSTEM_PROMPT_OPEN
     messages = [{"role": "system", "content": prompt}]
     for msg in chat_history[-10:]:
-        messages.append(msg)
+        messages.append({"role": msg["role"], "content": msg["content"]})
     messages.append({"role": "user", "content": question})
     return messages
 
@@ -92,6 +92,10 @@ def show():
         if role == "user":
             with st.chat_message("user", avatar="👤"):
                 st.markdown(content)
+                hints = message.get("spell_hints") or []
+                if show_spell and hints:
+                    hstr = ", ".join([f"`{a}` → `{b}`" for a, b in hints])
+                    st.markdown(f"*Suggested spellings:* {hstr}")
         else:
             with st.chat_message("assistant", avatar="🤖"):
                 st.markdown(content)
@@ -102,16 +106,16 @@ def show():
         user_input = pending
 
     if user_input:
+        hints = suggest_for_text(user_input)
         with st.chat_message("user", avatar="👤"):
             st.markdown(user_input)
-
-        if show_spell:
-            hints = suggest_for_text(user_input)
-            if hints:
+            if show_spell and hints:
                 hstr = ", ".join([f"`{a}` → `{b}`" for a, b in hints])
-                st.caption(f"Spell hints: {hstr}")
+                st.markdown(f"*Suggested spellings:* {hstr}")
 
-        st.session_state.chat_history.append({"role": "user", "content": user_input})
+        st.session_state.chat_history.append(
+            {"role": "user", "content": user_input, "spell_hints": hints}
+        )
 
         with st.chat_message("assistant", avatar="🤖"):
             if not config.GROQ_API_KEY:

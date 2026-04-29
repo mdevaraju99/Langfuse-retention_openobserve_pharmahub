@@ -193,8 +193,11 @@ def revise_answer_with_critic(
         {
             "role": "system",
             "content": (
-                "You are a strict pharmaceutical answer critic. Revise the draft answer using ONLY the context. "
-                "Include source citations like [file.pdf] for factual claims. If context is insufficient, state it clearly."
+                "You are a strict pharmaceutical answer critic. Revise the draft answer using ONLY the context "
+                "for document-grounded claims. Include source citations like [file.pdf] for those claims. "
+                "If the draft ends with a section titled **General context (not from your documents):**, "
+                "keep that section unchanged at the end (it is intentional general orientation, not from the files). "
+                "If context is insufficient for grounded claims, state it clearly in the grounded portion."
             ),
         },
         {

@@ -2,6 +2,8 @@
 Company Knowledge Page (Multi-Document RAG with Neo4j)
 Enhanced: streaming answers, spell hints, agentic retrieval, capacity readout.
 """
+import re
+
 import streamlit as st
 import pandas as pd
 
@@ -30,14 +32,113 @@ from utils.spellcheck_util import suggest_for_text
 RAG_SYSTEM_PROMPT = """You are an expert pharmaceutical knowledge assistant with deep expertise in clinical trials, drug mechanisms, and regulatory affairs. You are analyzing multiple documents simultaneously.
 
 INSTRUCTIONS:
-1. Answer based ONLY on the provided context. Never hallucinate.
-2. Always cite the exact source document in brackets like [document_name.pdf] after each fact.
-3. Use rich markdown formatting: headers (##, ###), bullet points, **bold**, tables where helpful.
-4. For COMPARISON questions: use a markdown table and label sources per row.
-5. For SAFETY questions: separate severity levels clearly.
-6. Always end with a short conclusion section.
+1. For anything stated about the **uploaded documents**, use ONLY the provided context. Cite every such fact with [document_name.pdf]. Do not invent trial results, dosing, or product claims.
+2. Use rich markdown: headers (##, ###), bullets, **bold**, tables where helpful.
+3. For COMPARISON questions: use a markdown table and label sources per row.
+4. For SAFETY questions: separate severity levels clearly.
+5. End with a short **Conclusion** section.
 
-If the context is insufficient, say so explicitly and do not invent facts."""
+WHEN THE DOCUMENTS DO NOT ANSWER THE QUESTION (e.g. background or definition missing in context):
+6. Say clearly in the main answer that the specific detail is **not** in the provided documents (you may note what IS in the files if relevant).
+7. Immediately after, add a section titled exactly **General context (not from your documents):** followed by **at most two short sentences** of widely accepted pharmaceutical/clinical orientation related to the user's question. No lists. No product-specific claims. This is general knowledge only, not sourced from the uploads.
+"""
+
+
+# Tiny follow-up when we skip the main RAG call (no retrieved text) or withhold a grounded answer.
+_GENERAL_ORIENTATION_SYSTEM = (
+    "You assist pharmaceutical users. The uploaded documents did not supply retrieved text, "
+    "or the app could not ground an answer. Output ONLY markdown: start with the exact line "
+    "**General context (not from your documents):** then one blank line, then at most 2 short sentences "
+    "of accurate general pharmaceutical/clinical background related to the user's question. "
+    "No bullet lists. No specific product or trial claims. If the question is unrelated to medicine/pharma, "
+    "output one sentence saying general clinical context is not applicable."
+)
+
+
+def _general_orientation_tail(user_question: str) -> str:
+    if not config.GROQ_API_KEY or not (user_question or "").strip():
+        return ""
+    try:
+        tail = complete_groq_chat(
+            [
+                {"role": "system", "content": _GENERAL_ORIENTATION_SYSTEM},
+                {"role": "user", "content": user_question.strip()},
+            ],
+            model="llama-3.1-8b-instant",
+        ).strip()
+        return f"\n\n{tail}" if tail else ""
+    except Exception:
+        return ""
+
+
+_GENERAL_CONTEXT_HEADING = re.compile(
+    r"\*\*General context \(not from your documents\):\*\*",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _grounded_slice_for_validation(answer: str) -> str:
+    """Score only the document-grounded portion; ignore the general-knowledge tail."""
+    if not answer:
+        return ""
+    m = _GENERAL_CONTEXT_HEADING.search(answer)
+    if m:
+        return answer[: m.start()].strip()
+    return answer.strip()
+
+
+def _render_rag_quality_panel() -> None:
+    """Metrics, trace, validation notes, and thumbs — collapsed under one expander."""
+    ptrace = st.session_state.get("rag_panel_trace") or []
+    pval = st.session_state.get("rag_panel_validation")
+    if not ptrace and pval is None:
+        return
+
+    with st.expander("Agentic trace (retrieval)", expanded=False):
+        if pval is not None:
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Confidence", f"{pval['confidence']}%")
+            m2.metric("Citations", str(pval["citation_count"]))
+            m3.metric("Grounded ratio", f"{int(pval['grounded_ratio'] * 100)}%")
+            if pval.get("decision") == "warn":
+                st.info("Partial grounding detected. Verify critical claims against source docs.")
+            issues = pval.get("issues") or []
+            if issues:
+                st.markdown("**Validation notes**")
+                st.markdown("\n".join([f"- {x}" for x in issues]))
+            st.markdown("---")
+        if ptrace:
+            st.markdown("**Retrieval trace**")
+            st.markdown("\n\n".join(ptrace))
+            st.markdown("---")
+        st.caption("Feedback (optional)")
+        feedback_comment = st.text_input(
+            "Feedback note (optional)",
+            key="rag_feedback_comment",
+            placeholder="What was good or what needs correction?",
+            label_visibility="collapsed",
+        )
+        u1, u2 = st.columns(2)
+        with u1:
+            up_clicked = st.button("👍 Save +1", key="rag_fb_up", use_container_width=True, type="secondary")
+        with u2:
+            down_clicked = st.button("👎 Save -1", key="rag_fb_down", use_container_width=True, type="secondary")
+        if up_clicked or down_clicked:
+            ex = st.session_state.get("last_rag_exchange", {})
+            if ex:
+                target = append_feedback(
+                    question=ex.get("question", ""),
+                    answer=ex.get("answer", ""),
+                    rating="thumbs_up" if up_clicked else "thumbs_down",
+                    comment=feedback_comment,
+                    metadata={
+                        "validation": ex.get("validation", {}),
+                        "context_chars": ex.get("context_chars", 0),
+                    },
+                )
+                st.success(f"Saved feedback to {target}")
+            else:
+                st.info("No response yet to save feedback for.")
 
 
 def show():
@@ -47,7 +148,9 @@ def show():
     )
     st.markdown(
         "Upload pharma documents and ask grounded questions across them. "
-        "Answers are generated using an **Agentic RAG** flow with source-aware retrieval."
+        "Answers use **Agentic RAG** with source-aware retrieval. "
+        "If the PDFs do not contain what you asked for, you still get a short "
+        "**General context (not from your documents)** block (at most two sentences) for orientation."
     )
 
     docs = get_documents_list()
@@ -199,6 +302,8 @@ def show():
                         "Retrieval still works locally, but the model needs a key."
                     )
                     st.warning(answer)
+                    st.session_state.rag_panel_trace = []
+                    st.session_state.rag_panel_validation = None
                 else:
                     if use_agentic:
                         orchestrated = orchestrate_agentic_rag(prompt, _retrieve)
@@ -212,6 +317,8 @@ def show():
                             answer = f"❓ {clarify_q}"
                             st.info("Clarification requested before answering.")
                             st.markdown(answer)
+                            st.session_state.rag_panel_trace = list(trace)
+                            st.session_state.rag_panel_validation = None
                             st.session_state.rag_chat_history.append({"role": "assistant", "content": answer})
                             st.session_state.last_rag_exchange = {
                                 "question": prompt,
@@ -237,6 +344,8 @@ def show():
                             "I couldn't find relevant information in the uploaded documents "
                             "to answer your question."
                         )
+                        answer += _general_orientation_tail(prompt)
+                        st.markdown(answer)
                     else:
                         messages = [
                             {"role": "system", "content": RAG_SYSTEM_PROMPT},
@@ -261,12 +370,10 @@ def show():
                             st.markdown(answer)
 
                         if config.ENABLE_ANSWER_VALIDATION:
-                            validation = validate_answer(answer, context)
+                            validation = validate_answer(
+                                _grounded_slice_for_validation(answer), context
+                            )
                             vd = validation.to_dict()
-                            c1, c2, c3 = st.columns(3)
-                            c1.metric("Confidence", f"{vd['confidence']}%")
-                            c2.metric("Citations", str(vd["citation_count"]))
-                            c3.metric("Grounded ratio", f"{int(vd['grounded_ratio'] * 100)}%")
 
                             if vd["decision"] == "fail" or vd["confidence"] < int(config.RAG_CONFIDENCE_THRESHOLD):
                                 st.warning("Low confidence detected. Running critic revision pass...")
@@ -274,13 +381,17 @@ def show():
                                 rounds = max(0, int(config.RAG_MAX_REVISION_ROUNDS))
                                 for i in range(rounds):
                                     revised = revise_answer_with_critic(prompt, context, answer, vd.get("issues", []))
-                                    revised_validation = validate_answer(revised, context).to_dict()
+                                    revised_validation = validate_answer(
+                                        _grounded_slice_for_validation(revised), context
+                                    ).to_dict()
                                     trace.append(
                                         f"Critic revision {i+1}: confidence {vd['confidence']}% -> {revised_validation['confidence']}%"
                                     )
                                     if revised_validation["confidence"] >= int(config.RAG_CONFIDENCE_THRESHOLD) and revised_validation["decision"] != "fail":
                                         answer = revised
-                                        validation = validate_answer(answer, context)
+                                        validation = validate_answer(
+                                            _grounded_slice_for_validation(answer), context
+                                        )
                                         st.markdown("---")
                                         st.markdown("### Refined answer")
                                         st.markdown(answer)
@@ -290,22 +401,19 @@ def show():
                                     vd = revised_validation
                                     answer = revised
                                 if not revised_ok and bool(config.RAG_STRICT_ABSTAIN_ON_FAIL):
-                                    answer = (
+                                    abstain = (
                                         "I cannot provide a reliable grounded answer from the current context. "
                                         "Please refine your question with a specific document section, endpoint, "
                                         "or upload additional evidence."
                                     )
+                                    answer = abstain + _general_orientation_tail(prompt)
                                     st.error("Answer withheld: confidence remained below threshold after revision.")
                                     st.markdown(answer)
-                            elif vd["decision"] == "warn":
-                                st.info("Partial grounding detected. Verify critical claims against source docs.")
-                            if vd["issues"]:
-                                with st.expander("Validation details", expanded=False):
-                                    st.markdown("\n".join([f"- {x}" for x in vd["issues"]]))
 
-                if trace:
-                    with st.expander("Agentic trace (retrieval)", expanded=False):
-                        st.markdown("\n\n".join(trace))
+                st.session_state.rag_panel_trace = list(trace)
+                st.session_state.rag_panel_validation = (
+                    validation.to_dict() if validation is not None else None
+                )
 
                 st.session_state.rag_chat_history.append({"role": "assistant", "content": answer})
                 st.session_state.last_rag_exchange = {
@@ -318,35 +426,17 @@ def show():
             except Exception as e:
                 error_msg = f"Error generating response: {str(e)}"
                 st.error(error_msg)
+                st.session_state.rag_panel_trace = []
+                st.session_state.rag_panel_validation = None
                 st.session_state.rag_chat_history.append({"role": "assistant", "content": error_msg})
+
+    _render_rag_quality_panel()
 
     if st.session_state.rag_chat_history:
         st.markdown("---")
-        feedback_comment = st.text_input(
-            "Feedback note (optional)",
-            value="",
-            key="rag_feedback_comment",
-            placeholder="What was good or what needs correction?",
-        )
-        b1, b2 = st.columns(2)
-        with b1:
-            if st.button("🗑️ Clear Chat History"):
-                st.session_state.rag_chat_history = []
-                st.rerun()
-        with b2:
-            f1, f2 = st.columns(2)
-            up_clicked = f1.button("👍 Save +1", use_container_width=True, type="secondary")
-            down_clicked = f2.button("👎 Save -1", use_container_width=True, type="secondary")
-            if up_clicked or down_clicked:
-                ex = st.session_state.get("last_rag_exchange", {})
-                if ex:
-                    target = append_feedback(
-                        question=ex.get("question", ""),
-                        answer=ex.get("answer", ""),
-                        rating="thumbs_up" if up_clicked else "thumbs_down",
-                        comment=feedback_comment,
-                        metadata={"validation": ex.get("validation", {}), "context_chars": ex.get("context_chars", 0)},
-                    )
-                    st.success(f"Saved feedback to {target}")
-                else:
-                    st.info("No response yet to save feedback for.")
+        if st.button("🗑️ Clear Chat History"):
+            st.session_state.rag_chat_history = []
+            st.session_state.pop("rag_panel_trace", None)
+            st.session_state.pop("rag_panel_validation", None)
+            st.session_state.pop("last_rag_exchange", None)
+            st.rerun()

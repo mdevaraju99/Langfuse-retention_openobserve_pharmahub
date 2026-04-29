@@ -1,3 +1,21 @@
+<#
+.SYNOPSIS
+  Start Podman (Windows VM) and run the Neo4j 5 container for this Pharma POC.
+
+.DESCRIPTION
+  - Ensures Podman CLI exists
+  - Creates/starts podman machine (default: neo4j-machine, user-mode networking)
+  - Sets default connection to <machine>-root
+  - Creates or starts container "neo4j" with HTTP 7474 and Bolt 7687 on localhost
+
+.EXAMPLE
+  .\scripts\start_neo4j_podman.ps1
+
+.EXAMPLE
+  .\scripts\start_neo4j_podman.ps1 -Neo4jAuth "neo4j/mysecret" -BoltPort 7687
+
+  Match NEO4J_PASSWORD in your .env to the part after "neo4j/".
+#>
 param(
     [string]$MachineName = "neo4j-machine",
     [string]$ContainerName = "neo4j",

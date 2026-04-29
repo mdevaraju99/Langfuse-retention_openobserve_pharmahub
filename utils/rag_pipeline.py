@@ -19,8 +19,13 @@ from .pdf_extract import (
 def get_embedding_model():
     import os
 
+    # Keep sentence-transformers on the PyTorch path only.
+    # In some Windows Python setups, transformers may try optional TF/Keras
+    # integrations and fail even though we don't use them.
     os.environ.setdefault("USE_TF", "0")
     os.environ.setdefault("USE_FLAX", "0")
+    os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
+    os.environ.setdefault("DISABLE_TELEMETRY", "1")
     from sentence_transformers import SentenceTransformer
 
     return SentenceTransformer("all-MiniLM-L6-v2")
@@ -287,37 +292,45 @@ def get_rag_context(query: str, top_k: int = 15, max_docs: int = 5) -> str:
     Returns:
         Context string with source citations
     """
+    neo: Optional[Neo4jManager] = None
     try:
-        model = get_embedding_model()
-        query_embedding = model.encode([query])[0].tolist()
-        
         neo = Neo4jManager()
-        
-        # Try primary vector search
-        context = neo.get_multi_doc_context(
-            query_embedding,
-            top_k=top_k,
-            max_docs=max_docs,
-            user_query=query,
-        )
-        
-        # If primary retrieval returns empty, try fallback hybrid approach
+        context = ""
+
+        # Primary path: vector retrieval
+        try:
+            model = get_embedding_model()
+            query_embedding = model.encode([query])[0].tolist()
+            context = neo.get_multi_doc_context(
+                query_embedding,
+                top_k=top_k,
+                max_docs=max_docs,
+                user_query=query,
+            )
+        except Exception as embed_err:
+            # Keep retrieval alive even if local embedding stack is broken/missing.
+            print(f"Embedding path unavailable, switching to hybrid retrieval: {embed_err}")
+
+        # Secondary path: lexical/hybrid fallback (does not require embeddings)
         if not context or len(context.strip()) < 100:
             print(f"Primary retrieval insufficient for query: {query[:50]}...")
             context = neo._get_context_hybrid(top_k=top_k, max_docs=max_docs, user_query=query)
-        
-        neo.close()
-        
+
         if context and len(context.strip()) > 0:
             return context
-        else:
-            return ""  # Return empty string to trigger fallback to base knowledge
-            
+        return ""  # Return empty string to trigger fallback to base knowledge
+
     except Exception as e:
         print(f"RAG Error: {e}")
         import traceback
         traceback.print_exc()
         return ""
+    finally:
+        if neo:
+            try:
+                neo.close()
+            except Exception:
+                pass
 
 def get_documents_list() -> List[dict]:
     """Get list of all uploaded documents"""

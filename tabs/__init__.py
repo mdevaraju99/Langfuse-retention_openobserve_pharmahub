@@ -5,7 +5,6 @@ from typing import List
 
 __all__: List[str] = [
     "analytics",
-    "case_studies",
     "chatbot",
     "clinical_trials",
     "company_knowledge",

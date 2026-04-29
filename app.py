@@ -169,7 +169,6 @@ with st.sidebar:
             "Regulatory",
             "Company News",
             "Events",
-            "Case Studies",
             "Company Knowledge",
             "Chatbot"
         ],
@@ -182,7 +181,6 @@ with st.sidebar:
             "shield-check",
             "building",
             "calendar-event",
-            "book",
             "building-check",
             "chat-dots"
         ],
@@ -240,10 +238,6 @@ elif selected == "Company News":
 elif selected == "Events":
     from tabs import events
     events.show()
-
-elif selected == "Case Studies":
-    from tabs import case_studies
-    case_studies.show()
 
 elif selected == "Company Knowledge":
     from tabs import company_knowledge

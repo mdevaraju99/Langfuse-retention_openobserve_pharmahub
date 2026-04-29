@@ -6,9 +6,61 @@ import re
 import streamlit as st
 import config
 from utils.data_fetchers import fetch_drug_info, fetch_drug_info_relaxed
-from utils.formatters import truncate_text
 from utils.spellcheck_util import normalize_query_text, suggest_for_text, candidates_for_tokens
 from difflib import SequenceMatcher
+
+
+def _has_content(value: str) -> bool:
+    v = str(value or "").strip()
+    if not v:
+        return False
+    return v.upper() not in {"N/A", "NONE", "NULL", "NOT AVAILABLE"}
+
+
+def _normalize_section_text(text: str, section_key: str = "") -> str:
+    """Clean noisy FDA label formatting for easier reading."""
+    t = str(text or "").strip()
+    # Remove citation-like markers: ( 1 ), [see ...], etc.
+    t = re.sub(r"\(\s*\d+(\.\d+)?\s*\)", "", t)
+    t = re.sub(r"\[\s*see[^\]]*\]", "", t, flags=re.IGNORECASE)
+    # Strip common section headers in a safe, section-specific way (avoid clipping first letter).
+    header_patterns = {
+        "indications": r"^\s*\d+(\.\d+)?\s+INDICATIONS AND USAGE\s*",
+        "dosage": r"^\s*\d+(\.\d+)?\s+DOSAGE AND ADMINISTRATION\s*",
+        "side_effects": r"^\s*\d+(\.\d+)?\s+ADVERSE REACTIONS\s*",
+        "interactions": r"^\s*\d+(\.\d+)?\s+DRUG INTERACTIONS\s*",
+        "contraindications": r"^\s*\d+(\.\d+)?\s+CONTRAINDICATIONS\s*",
+        "pregnancy_warning": r"^\s*8(\.\d+)?\s+PREGNANCY(\s+RISK SUMMARY)?\s*",
+        "alternatives": r"^\s*\d+(\.\d+)?\s+MECHANISM OF ACTION\s*",
+        "warnings": r"^\s*\d+(\.\d+)?\s+WARNINGS( AND PRECAUTIONS)?\s*",
+    }
+    pat = header_patterns.get(section_key)
+    if pat:
+        t = re.sub(pat, "", t, flags=re.IGNORECASE)
+
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def _concise_summary(
+    text: str, max_sentences: int = 1, max_chars: int = 220, section_key: str = ""
+) -> str:
+    cleaned = _normalize_section_text(text, section_key=section_key)
+    if not cleaned:
+        return ""
+    parts = re.split(r"(?<=[.!?])\s+", cleaned)
+    summary = " ".join([p for p in parts if p][:max_sentences]).strip()
+    if not summary:
+        summary = cleaned
+    if len(summary) > max_chars:
+        clipped = summary[:max_chars].rstrip()
+        # Keep sentence-like ending; avoid cutting in the middle of a word.
+        if " " in clipped:
+            clipped = clipped.rsplit(" ", 1)[0]
+        summary = clipped.rstrip(" ,;:-")
+        if not summary.endswith((".", "!", "?")):
+            summary += "."
+    return summary
 
 
 def _safe_correction(raw: str, candidate: str) -> bool:
@@ -204,6 +256,9 @@ def show():
     st.markdown("Search comprehensive drug information from FDA OpenFDA database")
 
     pending = st.session_state.pop("drug_pending_search", None)
+    if pending:
+        # text_input with a fixed key keeps prior widget state unless we set it explicitly
+        st.session_state["drug_name_input"] = pending
     
     # Search interface
     drug_name = st.text_input(
@@ -311,17 +366,57 @@ def show():
                     st.markdown(f"**Route:** {drug.get('route', 'N/A')}")
                 
                 with col2:
-                    st.markdown("#### Purpose")
-                    purpose = truncate_text(drug.get('purpose', 'N/A'), 300)
-                    st.markdown(purpose)
-                
-                st.markdown("#### Indications & Usage")
-                indications = truncate_text(drug.get('indications', 'N/A'), 400)
-                st.markdown(indications)
-                
-                st.markdown("#### ⚠️ Warnings")
-                warnings = truncate_text(drug.get('warnings', 'N/A'), 400)
-                st.markdown(f'<div style="background: rgba(239, 68, 68, 0.1); padding: 1rem; border-radius: 8px; border-left: 4px solid #EF4444;">{warnings}</div>', unsafe_allow_html=True)
+                    purpose = drug.get("purpose", "")
+                    if _has_content(purpose):
+                        st.markdown("#### Purpose")
+                        st.markdown(
+                            _concise_summary(
+                                purpose,
+                                max_sentences=1,
+                                max_chars=220,
+                                section_key="purpose",
+                            )
+                        )
+
+                indications = drug.get("indications", "")
+                if _has_content(indications):
+                    st.markdown("#### Indications & Usage")
+                    st.markdown(
+                        _concise_summary(
+                            indications,
+                            max_sentences=1,
+                            max_chars=220,
+                            section_key="indications",
+                        )
+                    )
+
+                warnings = drug.get("warnings", "")
+                if _has_content(warnings):
+                    st.markdown("#### ⚠️ Warnings")
+                    warn_text = _concise_summary(
+                        warnings,
+                        max_sentences=1,
+                        max_chars=220,
+                        section_key="warnings",
+                    )
+                    st.markdown(warn_text)
+
+                sections = [
+                    ("#### Dosage", "dosage", 220),
+                    ("#### Side Effects", "side_effects", 220),
+                    ("#### Alternatives", "alternatives", 220),
+                ]
+                for heading, key, max_len in sections:
+                    value = drug.get(key, "N/A")
+                    if _has_content(value):
+                        st.markdown(heading)
+                        section_text = _concise_summary(
+                            value,
+                            max_sentences=1,
+                            max_chars=min(max_len, 220),
+                            section_key=key,
+                        )
+                        st.markdown(section_text)
                 
                 st.markdown("---")
                 st.markdown("*This information is from FDA OpenFDA. Always consult a healthcare professional.*")
