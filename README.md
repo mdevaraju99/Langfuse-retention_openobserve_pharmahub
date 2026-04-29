@@ -48,11 +48,13 @@ A comprehensive pharmaceutical knowledge portal built with Streamlit, featuring 
 - **Smart Scoring AI**: Ranks events by dates, actionability (e.g., "register"), and relevance
 - **Auto-Fallback**: Ensures no empty tabs by gracefully degrading to recent news
 
-### 🏢 **Company Knowledge (RAG)**
+### 🏢 **Company Knowledge (Agentic RAG)**
 - Upload company PDF/TXT documents and ask questions via AI
-- **RAG Pipeline**: LangChain + FAISS vector store + HuggingFace embeddings
-- **Groq LLM**: Uses Llama 3.3 70B for context-grounded answers
-- Strictly answers from uploaded documents — no hallucination
+- **Agentic RAG pipeline**: query rewrite → retrieval → relevance gate → answer
+- **Retrieval stack**: Neo4j vector index + hybrid fallback + context expansion
+- **Embedding model**: `sentence-transformers/all-MiniLM-L6-v2`
+- **Groq LLM**: uses Llama 3.3 70B for context-grounded answers
+- Prioritizes uploaded-document grounding and shows retrieval trace in UI
 - Chat-style interface with conversation history
 
 ### 💬 **AI Chatbot**
@@ -157,9 +159,9 @@ Pharma_knowledge_portal/
 | **OpenFDA** | Drug information & regulatory data | ✅ Working |
 | **ClinicalTrials.gov** | Clinical trials database | ✅ Working |
 | **PubMed E-utilities** | Research papers | ✅ Working |
-| **Groq AI** | Chatbot & RAG Q&A | ✅ Working |
-| **FAISS** | Vector similarity search (Company Knowledge) | ✅ Working |
-| **HuggingFace** | Sentence embeddings (all-MiniLM-L6-v2) | ✅ Working |
+| **Groq AI** | Chatbot & Agentic RAG answers | ✅ Working |
+| **Neo4j** | Document graph + vector similarity retrieval | ✅ Working |
+| **Sentence Transformers** | Embeddings (`all-MiniLM-L6-v2`) | ✅ Working |
 
 All APIs are free and publicly accessible. Optional API keys provide higher rate limits.
 
@@ -180,9 +182,9 @@ Use the sidebar menu to switch between tabs:
 - Results update in real-time
 - Cached for optimal performance
 
-### Company Knowledge (RAG)
+### Company Knowledge (Agentic RAG)
 - Upload a PDF or TXT document via the sidebar
-- Ask questions in the chat — answers are grounded in the uploaded document
+- Ask questions in the chat with agentic retrieval and relevance checks
 - Clear context anytime with the sidebar button
 - Requires Groq API key
 
@@ -199,9 +201,9 @@ Use the sidebar menu to switch between tabs:
 - **Pandas** - Data manipulation
 - **Plotly** - Interactive visualizations
 - **Groq AI** - Language model for chatbot & RAG
-- **LangChain** - RAG pipeline orchestration
-- **FAISS** - Vector similarity search
-- **HuggingFace Sentence Transformers** - Document embeddings
+- **Neo4j** - Graph database + vector index retrieval for Company Knowledge
+- **Sentence Transformers** - Document and query embeddings (`all-MiniLM-L6-v2`)
+- **langchain-text-splitters** - Document chunking utility
 - **NewsAPI** - News aggregation
 - **OpenFDA** - FDA data access
 - **PubMed E-utilities** - Biomedical literature
