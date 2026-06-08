@@ -1,8 +1,10 @@
 """
 Company Knowledge Page (Multi-Document RAG with Neo4j)
-Enhanced: streaming answers, spell hints, agentic retrieval, capacity readout.
+Enhanced: streaming answers, agentic retrieval, capacity readout.
 """
 import re
+import time
+from contextlib import nullcontext
 
 import streamlit as st
 import pandas as pd
@@ -27,6 +29,18 @@ from utils.rag_pipeline import (
     clear_all_documents,
 )
 from utils.spellcheck_util import suggest_for_text
+from utils.langfuse_trace import (
+    apply_trace_context,
+    flush_langfuse,
+    get_langfuse_client,
+    get_managed_prompt,
+    get_session_id,
+    get_user_id,
+    reset_session_id,
+    score_current_trace,
+    score_trace_by_id,
+    set_current_trace_io,
+)
 
 
 RAG_SYSTEM_PROMPT = """You are an expert pharmaceutical knowledge assistant with deep expertise in clinical trials, drug mechanisms, and regulatory affairs. You are analyzing multiple documents simultaneously.
@@ -65,6 +79,7 @@ def _general_orientation_tail(user_question: str) -> str:
                 {"role": "user", "content": user_question.strip()},
             ],
             model="llama-3.1-8b-instant",
+            observation_name="llm.groq.orientation_tail",
         ).strip()
         return f"\n\n{tail}" if tail else ""
     except Exception:
@@ -75,6 +90,37 @@ _GENERAL_CONTEXT_HEADING = re.compile(
     r"\*\*General context \(not from your documents\):\*\*",
     re.IGNORECASE | re.MULTILINE,
 )
+
+
+def _push_validation_scores(vd: dict, stage: str) -> None:
+    """Send confidence / grounded_ratio / citation_count / decision as Langfuse scores."""
+    try:
+        score_current_trace(
+            "confidence",
+            int(vd.get("confidence", 0)),
+            data_type="NUMERIC",
+            comment=f"stage={stage}",
+        )
+        score_current_trace(
+            "grounded_ratio",
+            float(vd.get("grounded_ratio", 0.0)),
+            data_type="NUMERIC",
+            comment=f"stage={stage}",
+        )
+        score_current_trace(
+            "citation_count",
+            int(vd.get("citation_count", 0)),
+            data_type="NUMERIC",
+            comment=f"stage={stage}",
+        )
+        score_current_trace(
+            "decision",
+            str(vd.get("decision", "warn")),
+            data_type="CATEGORICAL",
+            comment=f"stage={stage}",
+        )
+    except Exception:
+        pass
 
 
 def _grounded_slice_for_validation(answer: str) -> str:
@@ -126,17 +172,31 @@ def _render_rag_quality_panel() -> None:
         if up_clicked or down_clicked:
             ex = st.session_state.get("last_rag_exchange", {})
             if ex:
+                rating = "thumbs_up" if up_clicked else "thumbs_down"
                 target = append_feedback(
                     question=ex.get("question", ""),
                     answer=ex.get("answer", ""),
-                    rating="thumbs_up" if up_clicked else "thumbs_down",
+                    rating=rating,
                     comment=feedback_comment,
                     metadata={
                         "validation": ex.get("validation", {}),
                         "context_chars": ex.get("context_chars", 0),
                     },
                 )
-                st.success(f"Saved feedback to {target}")
+                trace_id = ex.get("trace_id")
+                if trace_id:
+                    score_trace_by_id(
+                        trace_id,
+                        name="user_feedback",
+                        value=1.0 if up_clicked else 0.0,
+                        data_type="BOOLEAN",
+                        comment=feedback_comment or rating,
+                        metadata={"rating": rating},
+                    )
+                st.success(
+                    f"Saved feedback to {target}"
+                    + (" and Langfuse" if trace_id else "")
+                )
             else:
                 st.info("No response yet to save feedback for.")
 
@@ -167,7 +227,6 @@ def show():
             value=bool(config.ENABLE_AGENTIC_RAG_DEFAULT),
             help="Adds small extra LLM steps before answering to improve retrieval quality.",
         )
-        show_spell = st.checkbox("Spell-check hints on questions", value=True)
 
         st.markdown("---")
         st.markdown("### 📂 Document Upload")
@@ -282,12 +341,6 @@ def show():
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        if show_spell:
-            hints = suggest_for_text(prompt)
-            if hints:
-                hstr = ", ".join([f"`{a}` → `{b}`" for a, b in hints])
-                st.caption(f"Spell hints: {hstr}")
-
         def _retrieve(q: str) -> str:
             return get_rag_context(q, top_k=15, max_docs=5)
 
@@ -305,110 +358,205 @@ def show():
                     st.session_state.rag_panel_trace = []
                     st.session_state.rag_panel_validation = None
                 else:
-                    if use_agentic:
-                        orchestrated = orchestrate_agentic_rag(prompt, _retrieve)
-                        if orchestrated.get("needs_clarification"):
-                            clarify_q = orchestrated.get(
-                                "clarification_question",
-                                "Could you clarify your question with a specific drug, endpoint, or document section?",
-                            )
-                            trace.extend(orchestrated.get("trace", []))
-                            trace.append("Clarifier requested more detail before retrieval.")
-                            answer = f"❓ {clarify_q}"
-                            st.info("Clarification requested before answering.")
-                            st.markdown(answer)
-                            st.session_state.rag_panel_trace = list(trace)
-                            st.session_state.rag_panel_validation = None
-                            st.session_state.rag_chat_history.append({"role": "assistant", "content": answer})
-                            st.session_state.last_rag_exchange = {
+                    # One Langfuse trace per turn: chain → nested retrieve + LLM (clearer than separate top-level rows).
+                    lf = get_langfuse_client()
+                    kb_session_id = get_session_id("company_knowledge")
+                    user_id = get_user_id()
+                    chain_started = time.perf_counter()
+                    chain_cm = (
+                        lf.start_as_current_observation(
+                            name="company_knowledge",
+                            as_type="chain",
+                            input={
                                 "question": prompt,
-                                "answer": answer,
-                                "validation": {},
-                                "context_chars": 0,
-                            }
-                            return
-                        context = orchestrated.get("context", "")
-                        trace.extend(orchestrated.get("trace", []))
-                        tms = orchestrated.get("timings_ms", {})
-                        if tms:
-                            trace.append(
-                                "Timings (ms): " + ", ".join([f"{k}={v}" for k, v in tms.items()])
-                            )
-                    else:
-                        trace.append("**Agentic RAG:** disabled")
-                        context = _retrieve(prompt)
-
-                    if not context:
-                        st.warning("No relevant information found in the documents.")
-                        answer = (
-                            "I couldn't find relevant information in the uploaded documents "
-                            "to answer your question."
-                        )
-                        answer += _general_orientation_tail(prompt)
-                        st.markdown(answer)
-                    else:
-                        messages = [
-                            {"role": "system", "content": RAG_SYSTEM_PROMPT},
-                            {
-                                "role": "user",
-                                "content": f"CONTEXT FROM DOCUMENTS:\n{context}\n\nQUESTION:\n{prompt}",
+                                "agentic_rag": use_agentic,
+                                "stream_answers": use_stream,
                             },
-                        ]
-
-                        if use_stream:
-                            pieces: list[str] = []
-
-                            def _gen():
-                                for ch in stream_groq_chat(messages):
-                                    pieces.append(ch)
-                                    yield ch
-
-                            st.write_stream(_gen())
-                            answer = "".join(pieces)
-                        else:
-                            answer = complete_groq_chat(messages)
-                            st.markdown(answer)
-
-                        if config.ENABLE_ANSWER_VALIDATION:
-                            validation = validate_answer(
-                                _grounded_slice_for_validation(answer), context
-                            )
-                            vd = validation.to_dict()
-
-                            if vd["decision"] == "fail" or vd["confidence"] < int(config.RAG_CONFIDENCE_THRESHOLD):
-                                st.warning("Low confidence detected. Running critic revision pass...")
-                                revised_ok = False
-                                rounds = max(0, int(config.RAG_MAX_REVISION_ROUNDS))
-                                for i in range(rounds):
-                                    revised = revise_answer_with_critic(prompt, context, answer, vd.get("issues", []))
-                                    revised_validation = validate_answer(
-                                        _grounded_slice_for_validation(revised), context
-                                    ).to_dict()
-                                    trace.append(
-                                        f"Critic revision {i+1}: confidence {vd['confidence']}% -> {revised_validation['confidence']}%"
+                        )
+                        if lf
+                        else nullcontext()
+                    )
+                    answer = ""
+                    captured_trace_id: str | None = None
+                    trace_ctx = apply_trace_context(
+                        lf,
+                        session_id=kb_session_id,
+                        user_id=user_id,
+                        tags=["company_knowledge"],
+                    )
+                    # chain_cm first so the chain span is the currently active OTel
+                    # span when apply_trace_context() sets session.id / user.id on it.
+                    with chain_cm as chain_obs, trace_ctx:
+                        try:
+                            captured_trace_id = getattr(chain_obs, "trace_id", None) if chain_obs is not None else None
+                        except Exception:
+                            captured_trace_id = None
+                        try:
+                            if use_agentic:
+                                orchestrated = orchestrate_agentic_rag(prompt, _retrieve)
+                                if orchestrated.get("needs_clarification"):
+                                    clarify_q = orchestrated.get(
+                                        "clarification_question",
+                                        "Could you clarify your question with a specific drug, endpoint, or document section?",
                                     )
-                                    if revised_validation["confidence"] >= int(config.RAG_CONFIDENCE_THRESHOLD) and revised_validation["decision"] != "fail":
-                                        answer = revised
-                                        validation = validate_answer(
-                                            _grounded_slice_for_validation(answer), context
-                                        )
-                                        st.markdown("---")
-                                        st.markdown("### Refined answer")
-                                        st.markdown(answer)
-                                        st.success("Confidence improved after critic revision.")
-                                        revised_ok = True
-                                        break
-                                    vd = revised_validation
-                                    answer = revised
-                                if not revised_ok and bool(config.RAG_STRICT_ABSTAIN_ON_FAIL):
-                                    abstain = (
-                                        "I cannot provide a reliable grounded answer from the current context. "
-                                        "Please refine your question with a specific document section, endpoint, "
-                                        "or upload additional evidence."
-                                    )
-                                    answer = abstain + _general_orientation_tail(prompt)
-                                    st.error("Answer withheld: confidence remained below threshold after revision.")
+                                    trace.extend(orchestrated.get("trace", []))
+                                    trace.append("Clarifier requested more detail before retrieval.")
+                                    answer = f"❓ {clarify_q}"
+                                    st.info("Clarification requested before answering.")
                                     st.markdown(answer)
+                                    st.session_state.rag_panel_trace = list(trace)
+                                    st.session_state.rag_panel_validation = None
+                                    st.session_state.rag_chat_history.append({"role": "assistant", "content": answer})
+                                    st.session_state.last_rag_exchange = {
+                                        "question": prompt,
+                                        "answer": answer,
+                                        "validation": {},
+                                        "context_chars": 0,
+                                        "trace_id": captured_trace_id,
+                                    }
+                                    return
+                                context = orchestrated.get("context", "")
+                                trace.extend(orchestrated.get("trace", []))
+                                tms = orchestrated.get("timings_ms", {})
+                                if tms:
+                                    trace.append(
+                                        "Timings (ms): " + ", ".join([f"{k}={v}" for k, v in tms.items()])
+                                    )
+                            else:
+                                trace.append("**Agentic RAG:** disabled")
+                                context = _retrieve(prompt)
+
+                            if not context:
+                                st.warning("No relevant information found in the documents.")
+                                answer = (
+                                    "I couldn't find relevant information in the uploaded documents "
+                                    "to answer your question."
+                                )
+                                answer += _general_orientation_tail(prompt)
+                                st.markdown(answer)
+                            else:
+                                system_text, prompt_obj = get_managed_prompt(
+                                    "pharma/rag-system",
+                                    label="production",
+                                    fallback_text=RAG_SYSTEM_PROMPT,
+                                )
+                                messages = [
+                                    {"role": "system", "content": system_text},
+                                    {
+                                        "role": "user",
+                                        "content": f"CONTEXT FROM DOCUMENTS:\n{context}\n\nQUESTION:\n{prompt}",
+                                    },
+                                ]
+
+                                if use_stream:
+                                    pieces: list[str] = []
+
+                                    def _gen():
+                                        for ch in stream_groq_chat(
+                                            messages,
+                                            observation_name="llm.groq.completion.stream",
+                                            prompt=prompt_obj,
+                                        ):
+                                            pieces.append(ch)
+                                            yield ch
+
+                                    st.write_stream(_gen())
+                                    answer = "".join(pieces)
+                                else:
+                                    answer = complete_groq_chat(
+                                        messages,
+                                        observation_name="llm.groq.completion",
+                                        prompt=prompt_obj,
+                                    )
+                                    st.markdown(answer)
+
+                                if config.ENABLE_ANSWER_VALIDATION:
+                                    validation = validate_answer(
+                                        _grounded_slice_for_validation(answer), context
+                                    )
+                                    vd = validation.to_dict()
+                                    _push_validation_scores(vd, stage="initial")
+
+                                    if vd["decision"] == "fail" or vd["confidence"] < int(config.RAG_CONFIDENCE_THRESHOLD):
+                                        st.warning("Low confidence detected. Running critic revision pass...")
+                                        revised_ok = False
+                                        rounds = max(0, int(config.RAG_MAX_REVISION_ROUNDS))
+                                        for i in range(rounds):
+                                            revised = revise_answer_with_critic(
+                                                prompt,
+                                                context,
+                                                answer,
+                                                vd.get("issues", []),
+                                                observation_name="llm.groq.critic_revision",
+                                            )
+                                            revised_validation = validate_answer(
+                                                _grounded_slice_for_validation(revised), context
+                                            ).to_dict()
+                                            trace.append(
+                                                f"Critic revision {i+1}: confidence {vd['confidence']}% -> {revised_validation['confidence']}%"
+                                            )
+                                            if revised_validation["confidence"] >= int(config.RAG_CONFIDENCE_THRESHOLD) and revised_validation["decision"] != "fail":
+                                                answer = revised
+                                                validation = validate_answer(
+                                                    _grounded_slice_for_validation(answer), context
+                                                )
+                                                _push_validation_scores(
+                                                    validation.to_dict(), stage="refined"
+                                                )
+                                                st.markdown("---")
+                                                st.markdown("### Refined answer")
+                                                st.markdown(answer)
+                                                st.success("Confidence improved after critic revision.")
+                                                revised_ok = True
+                                                break
+                                            vd = revised_validation
+                                            answer = revised
+                                        if not revised_ok and bool(config.RAG_STRICT_ABSTAIN_ON_FAIL):
+                                            abstain = (
+                                                "I cannot provide a reliable grounded answer from the current context. "
+                                                "Please refine your question with a specific document section, endpoint, "
+                                                "or upload additional evidence."
+                                            )
+                                            answer = abstain + _general_orientation_tail(prompt)
+                                            st.error("Answer withheld: confidence remained below threshold after revision.")
+                                            st.markdown(answer)
+                        finally:
+                            if lf and chain_obs is not None:
+                                try:
+                                    total_ms = (time.perf_counter() - chain_started) * 1000
+                                    out_payload = {
+                                        "question": prompt,
+                                        "context_chars": len(context or ""),
+                                        # Context preview is consumed by the Langfuse
+                                        # LLM-as-a-Judge "Hallucination/Faithfulness"
+                                        # evaluator to score the answer against the
+                                        # documents we actually retrieved.
+                                        "context_preview": (context or "")[:4000],
+                                        "answer_preview": (answer or "")[:6000],
+                                        "total_latency_ms": round(total_ms, 2),
+                                    }
+                                    chain_obs.update(
+                                        output=out_payload,
+                                        metadata={
+                                            "validation_enabled": bool(config.ENABLE_ANSWER_VALIDATION),
+                                        },
+                                    )
+                                    set_current_trace_io(
+                                        question=prompt,
+                                        answer=answer or "",
+                                        context_preview=(context or "")[:4000],
+                                        extra_input={
+                                            "agentic_rag": use_agentic,
+                                            "stream_answers": use_stream,
+                                        },
+                                        extra_output={
+                                            "answer_preview": out_payload["answer_preview"],
+                                            "total_latency_ms": out_payload["total_latency_ms"],
+                                        },
+                                    )
+                                except Exception:
+                                    pass
+                            flush_langfuse()
 
                 st.session_state.rag_panel_trace = list(trace)
                 st.session_state.rag_panel_validation = (
@@ -421,6 +569,7 @@ def show():
                     "answer": answer,
                     "validation": validation.to_dict() if validation else {},
                     "context_chars": len(context or ""),
+                    "trace_id": captured_trace_id,
                 }
 
             except Exception as e:
@@ -439,4 +588,5 @@ def show():
             st.session_state.pop("rag_panel_trace", None)
             st.session_state.pop("rag_panel_validation", None)
             st.session_state.pop("last_rag_exchange", None)
+            reset_session_id("company_knowledge")
             st.rerun()

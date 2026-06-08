@@ -38,13 +38,38 @@ PUBMED_SEARCH = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 PUBMED_SUMMARY = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
 GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 
+def _strip_env_quotes(value: str) -> str:
+    s = (value or "").strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'":
+        return s[1:-1].strip()
+    return s
+
+
 # API Keys (optional for most APIs)
 NEWSAPI_KEY = os.getenv("NEWSAPI_KEY", "")
 OPENFDA_KEY = os.getenv("OPENFDA_KEY", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
+# Optional USD per 1M tokens — sent to Langfuse as cost_details on Groq generations.
+# Premium vs free Groq key does not change Langfuse; set prices here or in Langfuse → Models.
+GROQ_PRICE_INPUT_PER_1M = float(os.getenv("GROQ_PRICE_INPUT_PER_1M", "0") or 0)
+GROQ_PRICE_OUTPUT_PER_1M = float(os.getenv("GROQ_PRICE_OUTPUT_PER_1M", "0") or 0)
+
+# Langfuse (optional — tracing to self-hosted or cloud Langfuse)
+LANGFUSE_PUBLIC_KEY = _strip_env_quotes(os.getenv("LANGFUSE_PUBLIC_KEY", ""))
+LANGFUSE_SECRET_KEY = _strip_env_quotes(os.getenv("LANGFUSE_SECRET_KEY", ""))
+# Accept LANGFUSE_BASE_URL or LANGFUSE_HOST (e.g. http://localhost:3000)
+LANGFUSE_HOST = _strip_env_quotes(
+    os.getenv("LANGFUSE_BASE_URL") or os.getenv("LANGFUSE_HOST") or ""
+)
+ENABLE_LANGFUSE_TRACING = os.getenv("ENABLE_LANGFUSE", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
 # Neo4j Configuration
-NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+NEO4J_URI = os.getenv("NEO4J_URI", "bolt://127.0.0.1:17687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password123")
 # Must match CREATE VECTOR INDEX name in neo4j_manager.create_vector_index

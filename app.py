@@ -144,6 +144,19 @@ with st.sidebar:
             st.session_state.theme = "light"
             st.rerun()
 
+    if config.ENABLE_LANGFUSE_TRACING and (
+        config.LANGFUSE_PUBLIC_KEY or config.LANGFUSE_SECRET_KEY
+    ):
+        from utils.langfuse_trace import verify_langfuse_credentials
+
+        lf_ok, lf_msg = verify_langfuse_credentials()
+        if not lf_ok:
+            st.error("Langfuse tracing blocked")
+            st.caption(lf_msg)
+        elif "langfuse_ok_shown" not in st.session_state:
+            st.session_state.langfuse_ok_shown = True
+            st.caption(lf_msg)
+
     st.markdown("### 🛡️ Content scope")
     st.checkbox(
         "Pharma relevance (all modules)",

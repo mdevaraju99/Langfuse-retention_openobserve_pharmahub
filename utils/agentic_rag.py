@@ -5,13 +5,70 @@ Designed for Streamlit (no LangGraph dependency).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Generator, List, Optional
+from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 import time
 import re
 
 from groq import Groq
 
 import config
+from utils.langfuse_trace import (
+    flush_langfuse,
+    get_langfuse_client,
+    trim_trace_messages,
+)
+
+
+def _extract_usage(resp: Any) -> Dict[str, int]:
+    """Read prompt/completion/total tokens from a Groq response (or chunk)."""
+    try:
+        usage = getattr(resp, "usage", None)
+        if usage is None and isinstance(resp, dict):
+            usage = resp.get("usage")
+        if usage is None:
+            return {}
+        get = (lambda k: getattr(usage, k, None)) if not isinstance(usage, dict) else (lambda k: usage.get(k))
+        prompt_t = int(get("prompt_tokens") or 0)
+        completion_t = int(get("completion_tokens") or 0)
+        total_t = int(get("total_tokens") or (prompt_t + completion_t))
+        if not (prompt_t or completion_t or total_t):
+            return {}
+        return {"input": prompt_t, "output": completion_t, "total": total_t}
+    except Exception:
+        return {}
+
+
+def _cost_details_from_usage(usage: Dict[str, int], model: str) -> Dict[str, float]:
+    """
+    Optional cost estimate. Disabled by default (free Groq tier).
+    Enable by setting GROQ_PRICE_INPUT_PER_1M and GROQ_PRICE_OUTPUT_PER_1M in config/.env.
+    """
+    if not usage:
+        return {}
+    in_price = float(getattr(config, "GROQ_PRICE_INPUT_PER_1M", 0) or 0)
+    out_price = float(getattr(config, "GROQ_PRICE_OUTPUT_PER_1M", 0) or 0)
+    if in_price <= 0 and out_price <= 0:
+        return {"input": 0.0, "output": 0.0, "total": 0.0}
+    in_cost = (usage.get("input", 0) / 1_000_000.0) * in_price
+    out_cost = (usage.get("output", 0) / 1_000_000.0) * out_price
+    return {"input": round(in_cost, 8), "output": round(out_cost, 8), "total": round(in_cost + out_cost, 8)}
+
+
+def _safe_obs_update(obs: Any, **kwargs: Any) -> None:
+    """obs.update that tolerates SDK variants by retrying without unsupported keys."""
+    try:
+        obs.update(**kwargs)
+        return
+    except TypeError:
+        for drop in ("cost_details", "usage_details", "metadata"):
+            kwargs.pop(drop, None)
+            try:
+                obs.update(**kwargs)
+                return
+            except TypeError:
+                continue
+    except Exception:
+        pass
 
 
 def _client() -> Groq:
@@ -143,31 +200,10 @@ def grade_context_relevance(question: str, context_prefix: str) -> bool:
     return ans.startswith("Y")
 
 
-def stream_groq_chat(messages: List[Dict[str, str]], model: str = "llama-3.3-70b-versatile") -> Generator[str, None, None]:
-    """Token stream from Groq chat completions."""
-    if not config.GROQ_API_KEY:
-        yield "Set GROQ_API_KEY in .env to enable streaming."
-        return
-
-    c = _client()
-    stream = c.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=0.35,
-        max_tokens=2048,
-        stream=True,
-    )
-    for chunk in stream:
-        delta = chunk.choices[0].delta
-        if delta and delta.content:
-            yield delta.content
-
-
-def complete_groq_chat(messages: List[Dict[str, str]], model: str = "llama-3.3-70b-versatile") -> str:
-    """Non-streaming completion (used when streaming UI is disabled)."""
-    if not config.GROQ_API_KEY:
-        return "Set GROQ_API_KEY in .env to enable answers."
-
+def _groq_chat_complete_raw(
+    messages: List[Dict[str, str]], model: str = "llama-3.3-70b-versatile"
+) -> Tuple[str, Dict[str, int]]:
+    """Non-streaming Groq call. Returns (text, usage_dict)."""
     c = _client()
     r = c.chat.completions.create(
         model=model,
@@ -176,7 +212,123 @@ def complete_groq_chat(messages: List[Dict[str, str]], model: str = "llama-3.3-7
         max_tokens=2048,
         stream=False,
     )
-    return (r.choices[0].message.content or "").strip()
+    text = (r.choices[0].message.content or "").strip()
+    return text, _extract_usage(r)
+
+
+def stream_groq_chat(
+    messages: List[Dict[str, str]],
+    model: str = "llama-3.3-70b-versatile",
+    *,
+    observation_name: Optional[str] = None,
+    prompt: Optional[Any] = None,
+) -> Generator[str, None, None]:
+    """Token stream from Groq chat completions."""
+    if not config.GROQ_API_KEY:
+        yield "Set GROQ_API_KEY in .env to enable streaming."
+        return
+
+    obs_label = observation_name or "groq.chat.completion.stream"
+
+    c = _client()
+    base_kwargs = dict(
+        model=model,
+        messages=messages,
+        temperature=0.35,
+        max_tokens=2048,
+        stream=True,
+    )
+    try:
+        stream = c.chat.completions.create(
+            **base_kwargs,
+            stream_options={"include_usage": True},
+        )
+    except Exception:
+        # Older Groq SDKs reject stream_options. Retry without it; usage will be
+        # missing on streaming spans but the answer still streams normally.
+        stream = c.chat.completions.create(**base_kwargs)
+    buf: list[str] = []
+    last_usage: Dict[str, int] = {}
+    lf = get_langfuse_client()
+    try:
+        for chunk in stream:
+            chunk_usage = _extract_usage(chunk)
+            if chunk_usage:
+                last_usage = chunk_usage
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+            delta = choices[0].delta
+            if delta and getattr(delta, "content", None):
+                buf.append(delta.content)
+                yield delta.content
+    finally:
+        if lf and buf:
+            try:
+                gen_kwargs: Dict[str, Any] = dict(
+                    name=obs_label,
+                    as_type="generation",
+                    model=model,
+                    input=trim_trace_messages(messages),
+                    model_parameters={"temperature": 0.35, "max_tokens": 2048},
+                )
+                if prompt is not None:
+                    gen_kwargs["prompt"] = prompt
+                with lf.start_as_current_observation(**gen_kwargs) as obs:
+                    _safe_obs_update(
+                        obs,
+                        output="".join(buf),
+                        usage_details=last_usage or None,
+                        cost_details=_cost_details_from_usage(last_usage, model) or None,
+                    )
+                flush_langfuse()
+            except Exception:
+                pass
+
+
+def complete_groq_chat(
+    messages: List[Dict[str, str]],
+    model: str = "llama-3.3-70b-versatile",
+    *,
+    observation_name: Optional[str] = None,
+    prompt: Optional[Any] = None,
+) -> str:
+    """Non-streaming completion (used when streaming UI is disabled)."""
+    if not config.GROQ_API_KEY:
+        return "Set GROQ_API_KEY in .env to enable answers."
+
+    obs_label = observation_name or "groq.chat.completion"
+
+    lf = get_langfuse_client()
+    if not lf:
+        out, _usage = _groq_chat_complete_raw(messages, model)
+        return out
+
+    try:
+        gen_kwargs: Dict[str, Any] = dict(
+            name=obs_label,
+            as_type="generation",
+            model=model,
+            input=trim_trace_messages(messages),
+            model_parameters={"temperature": 0.35, "max_tokens": 2048},
+        )
+        if prompt is not None:
+            gen_kwargs["prompt"] = prompt
+        with lf.start_as_current_observation(**gen_kwargs) as obs:
+            try:
+                out, usage = _groq_chat_complete_raw(messages, model)
+                _safe_obs_update(
+                    obs,
+                    output=out,
+                    usage_details=usage or None,
+                    cost_details=_cost_details_from_usage(usage, model) or None,
+                )
+                return out
+            except Exception as e:
+                _safe_obs_update(obs, level="ERROR", status_message=str(e)[:2000])
+                raise
+    finally:
+        flush_langfuse()
 
 
 def revise_answer_with_critic(
@@ -184,6 +336,8 @@ def revise_answer_with_critic(
     context: str,
     draft_answer: str,
     issues: List[str],
+    *,
+    observation_name: Optional[str] = None,
 ) -> str:
     """
     Critic agent: revise answer to address validation issues while staying grounded.
@@ -208,7 +362,11 @@ def revise_answer_with_critic(
             ),
         },
     ]
-    return complete_groq_chat(messages, model="llama-3.3-70b-versatile")
+    return complete_groq_chat(
+        messages,
+        model="llama-3.3-70b-versatile",
+        observation_name=observation_name or "rag.critic.revision",
+    )
 
 
 def run_agentic_retrieval(

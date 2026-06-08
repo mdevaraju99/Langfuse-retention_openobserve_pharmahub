@@ -1,3 +1,5 @@
+from contextlib import nullcontext
+import time
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import streamlit as st
 import re
@@ -279,19 +281,8 @@ def ingest_documents_batch(files: List, filenames: List[str]) -> Tuple[bool, str
         error_details = "\n".join(errors)
         return False, f"Failed to process all documents:\n{error_details}"
 
-def get_rag_context(query: str, top_k: int = 15, max_docs: int = 5) -> str:
-    """
-    Retrieves context for a query using multi-document retrieval.
-    Enhanced with keyword extraction and fallback strategies.
-    
-    Args:
-        query: User question
-        top_k: Number of chunks to retrieve
-        max_docs: Maximum number of source documents
-        
-    Returns:
-        Context string with source citations
-    """
+def _get_rag_context_impl(query: str, top_k: int = 15, max_docs: int = 5) -> str:
+    """Neo4j retrieval implementation (no Langfuse wrapper)."""
     neo: Optional[Neo4jManager] = None
     try:
         neo = Neo4jManager()
@@ -331,6 +322,48 @@ def get_rag_context(query: str, top_k: int = 15, max_docs: int = 5) -> str:
                 neo.close()
             except Exception:
                 pass
+
+
+def get_rag_context(query: str, top_k: int = 15, max_docs: int = 5) -> str:
+    """
+    Retrieves context for a query using multi-document retrieval.
+    Enhanced with keyword extraction and fallback strategies.
+
+    When Langfuse is configured, emits a retriever observation (rag.neo4j.retrieve).
+    """
+    from utils.langfuse_trace import flush_langfuse, get_langfuse_client
+
+    lf = get_langfuse_client()
+    t0 = time.perf_counter()
+    cm = (
+        lf.start_as_current_observation(
+            name="retrieve.neo4j",
+            as_type="retriever",
+            input={
+                "query": (query or "")[:3000],
+                "top_k": top_k,
+                "max_docs": max_docs,
+            },
+        )
+        if lf
+        else nullcontext()
+    )
+    with cm as obs:
+        result = _get_rag_context_impl(query, top_k=top_k, max_docs=max_docs)
+        if lf and obs is not None:
+            try:
+                ms = (time.perf_counter() - t0) * 1000
+                obs.update(
+                    output={
+                        "context_chars": len(result or ""),
+                        "latency_ms": round(ms, 2),
+                        "text_preview": (result or "")[:1500],
+                    }
+                )
+            except Exception:
+                pass
+        flush_langfuse()
+        return result
 
 def get_documents_list() -> List[dict]:
     """Get list of all uploaded documents"""

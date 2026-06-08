@@ -1,11 +1,19 @@
+from contextlib import nullcontext
+
 import streamlit as st
 
 import config
 from utils.pharma_guardrails import guardrail_enabled
 from utils.agentic_rag import complete_groq_chat, stream_groq_chat
-from utils.spellcheck_util import suggest_for_text
-
-
+from utils.langfuse_trace import (
+    apply_trace_context,
+    flush_langfuse,
+    get_langfuse_client,
+    get_session_id,
+    get_user_id,
+    reset_session_id,
+    set_current_trace_io,
+)
 GENERAL_SYSTEM_PROMPT_STRICT = """You are an expert pharmaceutical knowledge assistant with deep expertise in drugs, diseases, clinical trial phases, and regulatory topics.
 
 STRICT DOMAIN RULE:
@@ -49,14 +57,14 @@ def _render_llm_response(messages: list, use_stream: bool) -> str:
         buf: list[str] = []
 
         def _gen():
-            for ch in stream_groq_chat(messages):
+            for ch in stream_groq_chat(messages, observation_name="llm.groq.completion.stream"):
                 buf.append(ch)
                 yield ch
 
         st.write_stream(_gen())
         return "".join(buf)
 
-    response = complete_groq_chat(messages)
+    response = complete_groq_chat(messages, observation_name="llm.groq.completion")
     st.markdown(response)
     return response
 
@@ -79,11 +87,6 @@ def show():
         value=bool(config.ENABLE_STREAMING_UI),
         key="chatbot_stream_toggle",
     )
-    show_spell = st.checkbox(
-        "Spell-check hints",
-        value=True,
-        key="chatbot_spell_toggle",
-    )
     st.caption("Document-grounded Q&A is available in the **Company Knowledge** tab.")
 
     for message in st.session_state.chat_history:
@@ -92,10 +95,6 @@ def show():
         if role == "user":
             with st.chat_message("user", avatar="👤"):
                 st.markdown(content)
-                hints = message.get("spell_hints") or []
-                if show_spell and hints:
-                    hstr = ", ".join([f"`{a}` → `{b}`" for a, b in hints])
-                    st.markdown(f"*Suggested spellings:* {hstr}")
         else:
             with st.chat_message("assistant", avatar="🤖"):
                 st.markdown(content)
@@ -106,16 +105,10 @@ def show():
         user_input = pending
 
     if user_input:
-        hints = suggest_for_text(user_input)
         with st.chat_message("user", avatar="👤"):
             st.markdown(user_input)
-            if show_spell and hints:
-                hstr = ", ".join([f"`{a}` → `{b}`" for a, b in hints])
-                st.markdown(f"*Suggested spellings:* {hstr}")
 
-        st.session_state.chat_history.append(
-            {"role": "user", "content": user_input, "spell_hints": hints}
-        )
+        st.session_state.chat_history.append({"role": "user", "content": user_input})
 
         with st.chat_message("assistant", avatar="🤖"):
             if not config.GROQ_API_KEY:
@@ -125,12 +118,61 @@ def show():
                 )
                 st.markdown(response)
             else:
-                try:
-                    messages = _build_general_messages(user_input, st.session_state.chat_history[:-1])
-                    response = _render_llm_response(messages, use_stream)
-                except Exception as e:
-                    response = f"❌ Error: {str(e)}\n\nPlease check your GROQ_API_KEY configuration."
-                    st.markdown(response)
+                lf = get_langfuse_client()
+                chatbot_session_id = get_session_id("chatbot")
+                user_id = get_user_id()
+                chain_cm = (
+                    lf.start_as_current_observation(
+                        name="chatbot",
+                        as_type="chain",
+                        input={
+                            "question": user_input,
+                            "stream_answers": bool(use_stream),
+                            "guardrail_enabled": guardrail_enabled(),
+                        },
+                    )
+                    if lf
+                    else nullcontext()
+                )
+                response = ""
+                trace_ctx = apply_trace_context(
+                    lf,
+                    session_id=chatbot_session_id,
+                    user_id=user_id,
+                    tags=["chatbot"],
+                )
+                # chain_cm first so the chain span is the currently active OTel
+                # span when apply_trace_context() sets session.id / user.id on it.
+                with chain_cm as chain_obs, trace_ctx:
+                    try:
+                        messages = _build_general_messages(user_input, st.session_state.chat_history[:-1])
+                        response = _render_llm_response(messages, use_stream)
+                    except Exception as e:
+                        response = f"❌ Error: {str(e)}\n\nPlease check your GROQ_API_KEY configuration."
+                        st.markdown(response)
+                    finally:
+                        if lf and chain_obs is not None:
+                            try:
+                                chain_obs.update(
+                                    output={
+                                        "question": user_input,
+                                        "answer_preview": (response or "")[:6000],
+                                    }
+                                )
+                                set_current_trace_io(
+                                    question=user_input,
+                                    answer=response or "",
+                                    extra_input={
+                                        "stream_answers": bool(use_stream),
+                                        "guardrail_enabled": guardrail_enabled(),
+                                    },
+                                    extra_output={
+                                        "answer_preview": (response or "")[:6000],
+                                    },
+                                )
+                            except Exception:
+                                pass
+                        flush_langfuse()
 
         st.session_state.chat_history.append({"role": "assistant", "content": response})
         st.rerun()
@@ -156,6 +198,7 @@ def show():
 
         if st.button("🗑️ Clear Chat History", use_container_width=True, type="secondary"):
             st.session_state.chat_history = []
+            reset_session_id("chatbot")
             st.rerun()
 
     if not st.session_state.chat_history:

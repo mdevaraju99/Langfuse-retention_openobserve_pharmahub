@@ -21,8 +21,9 @@ param(
     [string]$ContainerName = "neo4j",
     [string]$Neo4jImage = "docker.io/library/neo4j:5",
     [string]$Neo4jAuth = "neo4j/password123",
-    [int]$HttpPort = 7474,
-    [int]$BoltPort = 7687
+    # Windows Podman user-mode networking: 7687/7474 often break Bolt handshake (wslrelay).
+    [int]$HttpPort = 17474,
+    [int]$BoltPort = 17687
 )
 
 $ErrorActionPreference = "Stop"
@@ -106,8 +107,8 @@ function Start-Neo4jContainer {
     Write-Step "Creating and starting container '$Name'"
     podman run -d `
         --name $Name `
-        -p "${PortHttp}:7474" `
-        -p "${PortBolt}:7687" `
+        -p "127.0.0.1:${PortHttp}:7474" `
+        -p "127.0.0.1:${PortBolt}:7687" `
         -e "NEO4J_AUTH=$Auth" `
         $Image | Out-Null
 }
@@ -151,5 +152,6 @@ Verify-Endpoints -PortHttp $HttpPort -PortBolt $BoltPort
 Write-Host ""
 Write-Host "Done. Use these .env values for this POC:" -ForegroundColor Green
 Write-Host "NEO4J_URI=bolt://127.0.0.1:$BoltPort"
+Write-Host "Neo4j Browser: http://127.0.0.1:$HttpPort"
 Write-Host "NEO4J_USER=neo4j"
 Write-Host "NEO4J_PASSWORD=$($Neo4jAuth.Split('/')[1])"
