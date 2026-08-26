@@ -10,12 +10,19 @@ import time
 import re
 
 from groq import Groq
+import httpx
 
 import config
 from utils.langfuse_trace import (
     flush_langfuse,
     get_langfuse_client,
     trim_trace_messages,
+)
+from utils.openobserve_setup import (
+    flush_openobserve,
+    mark_current_span_error,
+    mark_current_span_ok,
+    trace_span,
 )
 
 
@@ -72,7 +79,18 @@ def _safe_obs_update(obs: Any, **kwargs: Any) -> None:
 
 
 def _client() -> Groq:
-    return Groq(api_key=config.GROQ_API_KEY)
+    return Groq(
+        api_key=config.GROQ_API_KEY,
+        http_client=httpx.Client(verify=config.get_ssl_verify()),
+    )
+
+
+def _primary_model() -> str:
+    return getattr(config, "GROQ_MODEL_PRIMARY", None) or "openai/gpt-oss-120b"
+
+
+def _fast_model() -> str:
+    return getattr(config, "GROQ_MODEL_FAST", None) or "openai/gpt-oss-20b"
 
 
 @dataclass
@@ -105,7 +123,7 @@ def ask_clarifying_question(user_question: str) -> str:
         return "Could you clarify your target drug/trial/document section so I can answer precisely?"
     c = _client()
     r = c.chat.completions.create(
-        model="llama-3.1-8b-instant",
+        model=_fast_model(),
         temperature=0.1,
         max_tokens=80,
         messages=[
@@ -127,7 +145,7 @@ def create_retrieval_plan(user_question: str, rewritten_query: str) -> str:
         return f"Use query `{rewritten_query or user_question}` and prioritize endpoint, safety, dosing, outcomes."
     c = _client()
     r = c.chat.completions.create(
-        model="llama-3.1-8b-instant",
+        model=_fast_model(),
         temperature=0.1,
         max_tokens=120,
         messages=[
@@ -151,7 +169,7 @@ def rewrite_query_for_retrieval(user_question: str) -> str:
 
     c = _client()
     r = c.chat.completions.create(
-        model="llama-3.1-8b-instant",
+        model=_fast_model(),
         temperature=0,
         max_tokens=120,
         messages=[
@@ -179,7 +197,7 @@ def grade_context_relevance(question: str, context_prefix: str) -> bool:
 
     c = _client()
     r = c.chat.completions.create(
-        model="llama-3.1-8b-instant",
+        model=_fast_model(),
         temperature=0,
         max_tokens=5,
         messages=[
@@ -201,9 +219,10 @@ def grade_context_relevance(question: str, context_prefix: str) -> bool:
 
 
 def _groq_chat_complete_raw(
-    messages: List[Dict[str, str]], model: str = "llama-3.3-70b-versatile"
+    messages: List[Dict[str, str]], model: Optional[str] = None
 ) -> Tuple[str, Dict[str, int]]:
     """Non-streaming Groq call. Returns (text, usage_dict)."""
+    model = model or _primary_model()
     c = _client()
     r = c.chat.completions.create(
         model=model,
@@ -218,7 +237,7 @@ def _groq_chat_complete_raw(
 
 def stream_groq_chat(
     messages: List[Dict[str, str]],
-    model: str = "llama-3.3-70b-versatile",
+    model: Optional[str] = None,
     *,
     observation_name: Optional[str] = None,
     prompt: Optional[Any] = None,
@@ -228,6 +247,7 @@ def stream_groq_chat(
         yield "Set GROQ_API_KEY in .env to enable streaming."
         return
 
+    model = model or _primary_model()
     obs_label = observation_name or "groq.chat.completion.stream"
 
     c = _client()
@@ -281,14 +301,16 @@ def stream_groq_chat(
                         usage_details=last_usage or None,
                         cost_details=_cost_details_from_usage(last_usage, model) or None,
                     )
+                    mark_current_span_ok()
                 flush_langfuse()
             except Exception:
+                mark_current_span_error("groq stream observation failed")
                 pass
 
 
 def complete_groq_chat(
     messages: List[Dict[str, str]],
-    model: str = "llama-3.3-70b-versatile",
+    model: Optional[str] = None,
     *,
     observation_name: Optional[str] = None,
     prompt: Optional[Any] = None,
@@ -297,6 +319,7 @@ def complete_groq_chat(
     if not config.GROQ_API_KEY:
         return "Set GROQ_API_KEY in .env to enable answers."
 
+    model = model or _primary_model()
     obs_label = observation_name or "groq.chat.completion"
 
     lf = get_langfuse_client()
@@ -323,12 +346,15 @@ def complete_groq_chat(
                     usage_details=usage or None,
                     cost_details=_cost_details_from_usage(usage, model) or None,
                 )
+                mark_current_span_ok()
                 return out
             except Exception as e:
                 _safe_obs_update(obs, level="ERROR", status_message=str(e)[:2000])
+                mark_current_span_error(str(e))
                 raise
     finally:
         flush_langfuse()
+        flush_openobserve()
 
 
 def revise_answer_with_critic(
@@ -364,7 +390,7 @@ def revise_answer_with_critic(
     ]
     return complete_groq_chat(
         messages,
-        model="llama-3.3-70b-versatile",
+        model=_primary_model(),
         observation_name=observation_name or "rag.critic.revision",
     )
 
@@ -401,6 +427,17 @@ def orchestrate_agentic_rag(
     """
     Structured multi-agent style orchestration with timings for observability.
     """
+    with trace_span(
+        "rag.agentic.orchestrate",
+        attributes={"rag.question_chars": len(user_question or "")},
+    ):
+        return _orchestrate_agentic_rag_impl(user_question, retrieve)
+
+
+def _orchestrate_agentic_rag_impl(
+    user_question: str,
+    retrieve: Callable[[str], str],
+) -> Dict:
     state = AgentState(user_question=user_question)
 
     # Clarifier agent
@@ -413,6 +450,7 @@ def orchestrate_agentic_rag(
         state.trace.append("Clarifier: question clear.")
     state.timings_ms["clarifier"] = round((time.perf_counter() - t0) * 1000, 2)
     if state.needs_clarification:
+        flush_openobserve()
         return {
             "rewritten_query": "",
             "retrieval_plan": "",
@@ -456,6 +494,7 @@ def orchestrate_agentic_rag(
         if retry_context and len(retry_context) > len(state.context or ""):
             state.context = retry_context
 
+    flush_openobserve()
     return {
         "rewritten_query": state.rewritten_query,
         "retrieval_plan": state.retrieval_plan,

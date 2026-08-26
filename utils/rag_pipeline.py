@@ -332,6 +332,13 @@ def get_rag_context(query: str, top_k: int = 15, max_docs: int = 5) -> str:
     When Langfuse is configured, emits a retriever observation (rag.neo4j.retrieve).
     """
     from utils.langfuse_trace import flush_langfuse, get_langfuse_client
+    from utils.openobserve_setup import (
+        flush_openobserve,
+        log_event,
+        mark_current_span_error,
+        mark_current_span_ok,
+        trace_span,
+    )
 
     lf = get_langfuse_client()
     t0 = time.perf_counter()
@@ -348,22 +355,44 @@ def get_rag_context(query: str, top_k: int = 15, max_docs: int = 5) -> str:
         if lf
         else nullcontext()
     )
-    with cm as obs:
-        result = _get_rag_context_impl(query, top_k=top_k, max_docs=max_docs)
-        if lf and obs is not None:
-            try:
-                ms = (time.perf_counter() - t0) * 1000
-                obs.update(
-                    output={
-                        "context_chars": len(result or ""),
-                        "latency_ms": round(ms, 2),
-                        "text_preview": (result or "")[:1500],
-                    }
-                )
-            except Exception:
-                pass
-        flush_langfuse()
-        return result
+    with trace_span(
+        "rag.neo4j.retrieve",
+        attributes={
+            "rag.top_k": top_k,
+            "rag.max_docs": max_docs,
+            "rag.query_chars": len(query or ""),
+        },
+    ):
+        with cm as obs:
+            result = _get_rag_context_impl(query, top_k=top_k, max_docs=max_docs)
+            ms = (time.perf_counter() - t0) * 1000
+            from utils.openobserve_metrics import record_rag_retrieval_ms
+
+            record_rag_retrieval_ms(ms, context_chars=len(result or ""))
+            log_event(
+                "rag.retrieval",
+                attributes={
+                    "latency_ms": round(ms, 2),
+                    "context_chars": len(result or ""),
+                    "top_k": top_k,
+                },
+            )
+            if lf and obs is not None:
+                try:
+                    ms = (time.perf_counter() - t0) * 1000
+                    obs.update(
+                        output={
+                            "context_chars": len(result or ""),
+                            "latency_ms": round(ms, 2),
+                            "text_preview": (result or "")[:1500],
+                        }
+                    )
+                except Exception:
+                    pass
+            mark_current_span_ok()
+            flush_langfuse()
+            flush_openobserve()
+            return result
 
 def get_documents_list() -> List[dict]:
     """Get list of all uploaded documents"""

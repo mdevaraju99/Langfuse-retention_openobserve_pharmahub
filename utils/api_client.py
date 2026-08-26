@@ -5,7 +5,7 @@ import requests
 import time
 from typing import Dict, Any, Optional
 import streamlit as st
-from config import REQUEST_TIMEOUT, MAX_RETRIES
+from config import REQUEST_TIMEOUT, MAX_RETRIES, get_ssl_verify
 
 
 class APIClient:
@@ -38,14 +38,16 @@ class APIClient:
                         url,
                         params=params,
                         headers=headers,
-                        timeout=REQUEST_TIMEOUT
+                        timeout=REQUEST_TIMEOUT,
+                        verify=get_ssl_verify(),
                     )
                 else:
                     response = requests.post(
                         url,
                         json=params,
                         headers=headers,
-                        timeout=REQUEST_TIMEOUT
+                        timeout=REQUEST_TIMEOUT,
+                        verify=get_ssl_verify(),
                     )
                 
                 response.raise_for_status()
@@ -74,6 +76,15 @@ class APIClient:
                         st.error(f"❌ HTTP Error: {e}")
                 return None
                 
+            except requests.exceptions.SSLError:
+                if not suppress_errors:
+                    st.error(
+                        "🔒 SSL certificate error (common on corporate networks). "
+                        "Set `SSL_CERT_FILE` to your company CA bundle in `.env`, "
+                        "or for local dev only: `SSL_VERIFY=false`."
+                    )
+                return None
+
             except requests.exceptions.ConnectionError:
                 if not suppress_errors:
                     st.error("🌐 Connection error. Please check your internet connection.")

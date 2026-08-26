@@ -1,0 +1,28 @@
+poc_id: job-optimizer
+display_name: Job Product Optimizer
+
+langfuse:
+  public_key_env: LANGFUSE_PUBLIC_KEY
+  secret_key_env: LANGFUSE_SECRET_KEY
+  host_env: LANGFUSE_BASE_URL
+  prompt_rag: job/rag-system
+  prompt_label: production
+  tags:
+    - product:job-optimizer
+  trace_names:
+    rag: job_rag
+    chat: job_chatbot
+
+scores:
+  auto:
+    - confidence
+    - user_feedback
+  human_queue: job-optimizer-review-v1
+
+datasets:
+  golden: job-optimizer-golden-v1
+
+prompts:
+  production_file: rag-system.txt
+  baseline_file: rag-system-baseline.txt
+  bullets_file: rag-system-bullets.txt

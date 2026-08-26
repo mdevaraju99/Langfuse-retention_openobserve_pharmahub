@@ -1,0 +1,1 @@
+Video Analysis — YOLOv8n person detection, crowd monitoring, zone overcrowding, stampede detection.

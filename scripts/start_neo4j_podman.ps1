@@ -39,6 +39,11 @@ function Ensure-Podman {
     }
 }
 
+function Test-PodmanConnection {
+    podman info --format "{{.Host.Arch}}" 2>$null | Out-Null
+    return $LASTEXITCODE -eq 0
+}
+
 function Ensure-Machine {
     param([string]$Name)
 
@@ -54,13 +59,28 @@ function Ensure-Machine {
     }
 
     Write-Step "Starting podman machine '$Name'"
+    # Podman often writes harmless stderr warnings (e.g. "screen size is bogus").
+    # With $ErrorActionPreference=Stop, those become terminating errors — ignore them.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     try {
-        podman machine start $Name
-    } catch {
-        # If already running, continue.
-        $msg = $_.Exception.Message
-        if ($msg -notmatch "already running") {
-            throw
+        podman machine start $Name 2>&1 | Out-Null
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+
+    if (-not (Test-PodmanConnection)) {
+        Write-Step "Podman socket stale (machine 'running' but CLI cannot connect). Restarting '$Name'..."
+        $ErrorActionPreference = "Continue"
+        try {
+            podman machine stop $Name 2>&1 | Out-Null
+            Start-Sleep -Seconds 3
+            podman machine start $Name 2>&1 | Out-Null
+        } finally {
+            $ErrorActionPreference = $prevEap
+        }
+        if (-not (Test-PodmanConnection)) {
+            throw "Podman still unreachable after restart. Try: wsl --shutdown, then re-run this script."
         }
     }
 }

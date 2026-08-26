@@ -74,7 +74,7 @@ def run_benchmark_suite(
                     {"role": "system", "content": "Answer concisely from context only."},
                     {"role": "user", "content": f"CONTEXT:\n{ctx}\n\nQUESTION:\n{query}"},
                 ],
-                model="llama-3.1-8b-instant",
+                model=config.GROQ_MODEL_FAST,
             )
             g1 = time.perf_counter()
             g_ms = (g1 - g0) * 1000

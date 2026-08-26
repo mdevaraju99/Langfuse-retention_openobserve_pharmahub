@@ -4,6 +4,131 @@
 
 ---
 
+## 0) Integrated POC architecture — signal flow (recommended for leadership)
+
+Three **separate signal planes** — do not mix data, inference, and observability in one arrow:
+
+| Plane | What moves | Stores / destination |
+|-------|------------|----------------------|
+| **Data** | PDFs, chunks, embeddings, retrieved context | Neo4j + local files |
+| **Inference** | Chat completion requests (question + context → answer) | External LLM provider via adapter |
+| **Observability** | Traces, scores, metrics, logs (parallel to user response) | Langfuse + OpenObserve |
+
+**LLM provider is not architecture-locked.** The POC calls an **OpenAI-compatible chat API** through `utils/agentic_rag.py`. Model IDs and endpoint are **config-driven** (`config.py` / `.env`). Today the deployment uses **Groq**; tomorrow the same adapter pattern supports Azure OpenAI, Anthropic-compatible gateways, or on-prem inference — **without changing Neo4j, RAG, or observability wiring**.
+
+```mermaid
+flowchart TB
+    classDef user fill:#F3F4F6,stroke:#6B7280,color:#374151
+    classDef app fill:#DBEAFE,stroke:#2563EB,color:#1E3A8A
+    classDef data fill:#EDE9FE,stroke:#7C3AED,color:#4C1D95
+    classDef infer fill:#FFEDD5,stroke:#EA580C,color:#7C2D12
+    classDef obs fill:#D1FAE5,stroke:#059669,color:#064E3B
+
+    U[User browser]:::user
+
+    subgraph APP["Application layer · Streamlit :8501"]
+        direction TB
+        ST[app.py router]
+        CK[Company Knowledge<br/>Agentic RAG + validation]
+        CB[Chatbot<br/>guardrailed chat]
+        ST --> CK
+        ST --> CB
+    end
+
+    subgraph DATA["Signal plane 1 — DATA · knowledge & artifacts"]
+        direction TB
+        ING[Ingest PDF → chunk → embed]
+        NEO[(Neo4j<br/>vectors · graph · chunks)]
+        EMB[Local embeddings<br/>all-MiniLM-L6-v2]
+        ART[Local artifacts<br/>feedback · benchmarks]
+        ING --> EMB --> NEO
+    end
+
+    subgraph INFER["Signal plane 2 — INFERENCE · provider-agnostic"]
+        direction TB
+        ADAPTER["LLM adapter<br/>utils/agentic_rag.py<br/>complete_groq_chat · stream_groq_chat"]
+        ROLES["Model roles in config<br/>primary → final answer<br/>fast → rewrite · plan · clarify"]
+        GATE["External LLM gateway<br/>OpenAI-compatible REST"]
+        TODAY["POC deployment today<br/>Groq API"]
+        FUTURE["Future swap<br/>Azure OpenAI · other provider"]
+        ADAPTER --> ROLES --> GATE
+        GATE --> TODAY
+        GATE -.-> FUTURE
+    end
+
+    subgraph OBS["Signal plane 3 — OBSERVABILITY · parallel sidecar"]
+        direction TB
+        LF_SDK[Langfuse SDK<br/>traces · scores · prompts]
+        LF_SRV[Langfuse Server :3000<br/>Postgres · ClickHouse · MinIO]
+        JUDGE[LLM-as-a-Judge<br/>separate judge connection in Langfuse UI]
+        OTEL[OpenTelemetry SDK<br/>utils/openobserve_setup.py]
+        O2[OpenObserve :5080<br/>traces · logs · metrics]
+        LF_SDK --> LF_SRV
+        LF_SRV --> JUDGE
+        OTEL --> O2
+    end
+
+    U -->|"① user question"| CK
+    U -->|"① user question"| CB
+
+    CK -->|"② upload / ingest"| ING
+    CK -->|"③ retrieve context"| NEO
+    CB -->|"③ no retrieval"| ADAPTER
+    CK -->|"④ generate answer"| ADAPTER
+
+    CK -->|"⑤ Langfuse trace + scores"| LF_SDK
+    CB -->|"⑤"| LF_SDK
+    CK -->|"⑥ OTel spans · metrics · logs"| OTEL
+    CB -->|"⑥"| OTEL
+    JUDGE -.->|"eval only · config in Langfuse"| GATE
+
+    CK -->|"⑦ thumbs / feedback"| ART
+
+    class ST,CK,CB app
+    class ING,NEO,EMB,ART data
+    class ADAPTER,ROLES,GATE,TODAY,FUTURE infer
+    class LF_SDK,LF_SRV,JUDGE,OTEL,O2 obs
+```
+
+### One Company Knowledge turn — signal order
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User
+    participant CK as Company Knowledge
+    participant NEO as Neo4j
+    participant LLM as LLM adapter
+    participant GW as LLM gateway
+    participant LF as Langfuse
+    participant O2 as OpenObserve
+
+    U->>CK: question
+    CK->>LF: start trace chain company_knowledge
+    CK->>O2: span rag.agentic.orchestrate
+    CK->>NEO: vector + hybrid retrieve
+    CK->>O2: span rag.neo4j.retrieve + metric retrieval_ms
+    CK->>LLM: messages + managed prompt
+    LLM->>GW: chat completion primary model
+    GW-->>LLM: answer tokens
+    LLM-->>CK: streamed / complete answer
+    CK->>LF: span llm.completion + trace I/O + scores
+    CK->>O2: metric turn_ms + log rag.turn.complete
+    CK-->>U: rendered answer
+    Note over GW: Provider + model ID are config.<br/>Not fixed to Groq or Llama in architecture.
+```
+
+### POC model roles today (config — swappable)
+
+| Role | Config location | POC value today |
+|------|-----------------|-----------------|
+| Primary answer | `GROQ_MODEL_PRIMARY` | `openai/gpt-oss-120b` |
+| Fast orchestration | `GROQ_MODEL_FAST` | `openai/gpt-oss-20b` |
+| Judge (Langfuse UI) | Langfuse → LLM Connections | separate Groq connection + judge model |
+| Embeddings | local SentenceTransformer | `all-MiniLM-L6-v2` (no LLM API) |
+
+---
+
 ## 1) Four-layer architecture (main diagram)
 
 ```mermaid
@@ -62,7 +187,7 @@ flowchart TB
         LF_CH["ClickHouse<br/>analytics / observations"]
         LF_S3["MinIO / S3<br/>media · exports"]
         NEO["Neo4j Podman<br/>bolt://127.0.0.1:17687"]
-        GROQ["Groq API<br/>llama-3.3-70b · llama-3.1-8b"]
+        LLM_GW["LLM gateway OpenAI-compatible<br/>POC today: Groq · models in config"]
         EMB["Local embeddings<br/>all-MiniLM-L6-v2"]
         ART["Local artifacts<br/>data/feedback · data/benchmarks · media_assets"]
         LF --> LF_DB
@@ -79,9 +204,9 @@ flowchart TB
     RAG --> TRACE
     LLM_ONLY --> TRACE
     RAG --> NEO
-    RAG --> GROQ
+    RAG --> LLM_GW
     RAG --> EMB
-    LLM_ONLY --> GROQ
+    LLM_ONLY --> LLM_GW
     TRACE --> LF
     SCORES --> LF
     FEED --> LF
@@ -89,14 +214,14 @@ flowchart TB
     PROMPT --> LF
     DS --> LF
     EXP --> LF
-    JUDGE --> GROQ
+    JUDGE --> LLM_GW
     OFFLINE --> ART
     CK --> ART
 
     class L1,UI,CK,CB,EXT,RAG,LLM_ONLY layer1
     class L2,TRACE,SPANS,SCORES,FEED,EVAL_RUN layer2
     class L3,PROMPT,DS,EXP,JUDGE,HUMAN,OFFLINE layer3
-    class L4,LF,LF_DB,LF_CH,LF_S3,NEO,GROQ,EMB,ART layer4
+    class L4,LF,LF_DB,LF_CH,LF_S3,NEO,LLM_GW,EMB,ART layer4
     class FUT,JOB,PN future
 ```
 
@@ -107,7 +232,7 @@ flowchart TB
 | MLflow reference (PdM) | Pharma Knowledge Hub AIOps |
 |------------------------|----------------------------|
 | PdM Dashboards (Milling UI) | **Streamlit** `app.py` — Company Knowledge, Chatbot, News, Trials, etc. |
-| Prediction API Services | **In-process RAG + Groq** (`utils/rag_pipeline.py`, `utils/agentic_rag.py`) |
+| Prediction API Services | **In-process RAG + LLM adapter** (`utils/rag_pipeline.py`, `utils/agentic_rag.py`) |
 | Registered production models | **Managed prompt** `pharma/rag-system` + config thresholds (`RAG_CONFIDENCE_THRESHOLD`) |
 | Decision output (risk, warnings) | **Answer + validation** — confidence %, citations, abstain, panel trace |
 | Inference event buffer | **Langfuse traces** — one trace per user turn, OTel export |
@@ -142,11 +267,11 @@ flowchart LR
     AG -->|no| RET[Vector + hybrid retrieval]
     ORCH --> RET
     RET --> NEO
-    RET --> GEN[Groq 70B answer]
+    RET --> GEN[LLM primary model answer]
     GEN --> VAL[Answer validator + critic loop]
     VAL --> OUT[Rendered answer + sources panel]
 
-    CB --> G2[Groq chat only]
+    CB --> G2[LLM chat only]
     G2 --> OUT2[Chat response]
 ```
 
@@ -174,7 +299,7 @@ sequenceDiagram
     participant ST as Streamlit tab
     participant LF as Langfuse SDK
     participant API as Langfuse Server
-    participant GQ as Groq API
+    participant GQ as LLM gateway
 
     U->>ST: Ask question
     ST->>LF: start chain observation<br/>company_knowledge | chatbot
@@ -183,12 +308,12 @@ sequenceDiagram
         ST->>ST: retrieve from Neo4j
         ST->>LF: span retrieve
         ST->>GQ: completion / stream
-        ST->>LF: span llm.groq.completion
+        ST->>LF: span llm.completion
         ST->>ST: validate + scores
         ST->>LF: score_current_trace confidence grounded_ratio
     else Chatbot
         ST->>GQ: chat completion
-        ST->>LF: span llm.groq.completion
+        ST->>LF: span llm.completion
     end
     ST->>LF: set_current_trace_io question answer context
     ST->>LF: flush
@@ -205,8 +330,8 @@ sequenceDiagram
 | Session | `get_session_id("company_knowledge")` |
 | Tags | `company_knowledge`, `chatbot` (+ future `product:pharma-hub`) |
 | Trace I/O | `set_current_trace_io()` — Preview tab |
-| LLM I/O | `complete_groq_chat` / `stream_groq_chat` in `utils/agentic_rag.py` |
-| Cost hint | `GROQ_PRICE_*` in `config.py` |
+| LLM I/O | `complete_groq_chat` / `stream_groq_chat` in `utils/agentic_rag.py` (OpenAI-compatible adapter) |
+| Cost hint | `GROQ_PRICE_*` in `config.py` (provider-specific; rename when gateway changes) |
 
 **Health check**
 
@@ -279,15 +404,15 @@ flowchart TB
     end
 
     subgraph External["External APIs"]
-        GROQ[Groq OpenAI-compatible API]
+        LLM_GW[LLM gateway OpenAI-compatible<br/>POC today: Groq]
         NEWS[NewsAPI · OpenFDA · PubMed · ClinicalTrials]
     end
 
     APP -->|bolt| NEO_C
     APP -->|LANGFUSE_*| LF_C
-    APP -->|GROQ_API_KEY| GROQ
+    APP -->|LLM API key| LLM_GW
     APP --> NEWS
-    LF_W --> GROQ
+    LF_W --> LLM_GW
 ```
 
 **Daily startup (POC)**
@@ -310,7 +435,7 @@ flowchart TD
     B --> C[3 Agentic orchestration<br/>clarify · rewrite · plan]
     C --> D[4 Neo4j vector + hybrid retrieval<br/>span: retrieve]
     D --> E[5 Build context + managed prompt pharma/rag-system]
-    E --> F[6 Groq llama-3.3-70b generates answer<br/>span: llm.groq.completion.stream]
+    E --> F[6 LLM primary model generates answer<br/>span: llm.completion.stream]
     F --> G[7 Validator: confidence citations grounding]
     G --> H[8 Langfuse scores + trace I/O<br/>context_preview answer_preview]
     H --> I[9 User sees answer + source panel]

@@ -1,0 +1,7 @@
+Intelligent Video Analysis — crowd monitoring system.
+
+Model: YOLOv8n (person class, conf=0.1)
+Modes: single camera (live/recorded), multi-camera (1–4 videos, stampede detection)
+Zone analytics: normalized zones, per-zone max_people thresholds
+Global overcrowding threshold: 30 people
+Stampede: optical flow + motion entropy (multi-camera only)

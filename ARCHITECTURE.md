@@ -2,7 +2,7 @@
 
 This document explains the full runtime chain for the current POC: ingestion, retrieval, generation, validation, feedback, and release quality gating.
 
-> **AIOps / Langfuse layer diagram (4-layer, MLOps-style):** see [`docs/AIOPS_ARCHITECTURE.md`](docs/AIOPS_ARCHITECTURE.md)
+> **Integrated signal-flow diagram (provider-agnostic LLM):** see [Section 0 in `docs/AIOPS_ARCHITECTURE.md`](docs/AIOPS_ARCHITECTURE.md#0-integrated-poc-architecture--signal-flow-recommended-for-leadership)
 
 ## 1) System Overview
 
@@ -105,11 +105,13 @@ flowchart TD
 
 ## 6) Models and Their Roles
 
+Models are **configuration**, not fixed architecture. The app uses an OpenAI-compatible LLM adapter; the POC deployment today points at **Groq**, but the gateway and model IDs can be swapped without changing Neo4j or observability.
+
 - **Embeddings**: `sentence-transformers/all-MiniLM-L6-v2`
-  - Used for chunk and query vectors.
-- **Fast orchestration calls**: `llama-3.1-8b-instant`
+  - Used for chunk and query vectors (local — no LLM API).
+- **Fast orchestration model**: `GROQ_MODEL_FAST` (default `openai/gpt-oss-20b`)
   - Clarifier, rewriter, planner, relevance yes/no judge, general-context tail.
-- **Main answer model**: `llama-3.3-70b-versatile`
+- **Primary answer model**: `GROQ_MODEL_PRIMARY` (default `openai/gpt-oss-120b`)
   - Final user-facing response generation and critic revision.
 
 ## 7) Data Storage and Artifacts

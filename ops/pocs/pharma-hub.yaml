@@ -1,0 +1,32 @@
+poc_id: pharma-hub
+display_name: Pharma Knowledge Hub
+
+langfuse:
+  public_key_env: LANGFUSE_PUBLIC_KEY
+  secret_key_env: LANGFUSE_SECRET_KEY
+  host_env: LANGFUSE_BASE_URL
+  prompt_rag: pharma/rag-system
+  prompt_label: production
+  tags:
+    - product:pharma-hub
+    - company_knowledge
+  trace_names:
+    rag: company_knowledge
+    chat: chatbot
+
+scores:
+  auto:
+    - confidence
+    - grounded_ratio
+    - citation_count
+    - decision
+    - user_feedback
+  human_queue: pharma-rag-review-v1
+
+datasets:
+  golden: pharma-rag-golden-v1
+
+prompts:
+  production_file: rag-system-bullets.txt
+  baseline_file: rag-system-baseline.txt
+  bullets_file: rag-system-bullets.txt

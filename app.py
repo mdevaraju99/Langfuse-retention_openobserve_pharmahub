@@ -13,6 +13,11 @@ sys.path.insert(0, str(project_root))
 
 import config
 
+# Optional OpenObserve / OpenTelemetry tracing (enabled via .env)
+from utils.openobserve_setup import setup_openobserve
+
+setup_openobserve()
+
 # Page configuration
 st.set_page_config(
     page_title=config.APP_TITLE,

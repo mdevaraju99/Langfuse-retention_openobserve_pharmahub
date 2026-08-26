@@ -50,6 +50,14 @@ NEWSAPI_KEY = os.getenv("NEWSAPI_KEY", "")
 OPENFDA_KEY = os.getenv("OPENFDA_KEY", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
+# Groq chat models (OpenAI-compatible IDs). Llama defaults were retired for this POC.
+GROQ_MODEL_PRIMARY = _strip_env_quotes(
+    os.getenv("GROQ_MODEL_PRIMARY", "openai/gpt-oss-120b")
+)
+GROQ_MODEL_FAST = _strip_env_quotes(
+    os.getenv("GROQ_MODEL_FAST", "openai/gpt-oss-20b")
+)
+
 # Optional USD per 1M tokens — sent to Langfuse as cost_details on Groq generations.
 # Premium vs free Groq key does not change Langfuse; set prices here or in Langfuse → Models.
 GROQ_PRICE_INPUT_PER_1M = float(os.getenv("GROQ_PRICE_INPUT_PER_1M", "0") or 0)
@@ -67,6 +75,96 @@ ENABLE_LANGFUSE_TRACING = os.getenv("ENABLE_LANGFUSE", "true").lower() in (
     "true",
     "yes",
 )
+
+# OpenObserve (optional — OTLP traces via OpenTelemetry)
+ENABLE_OPENOBSERVE = os.getenv("ENABLE_OPENOBSERVE", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+OPENOBSERVE_URL = _strip_env_quotes(os.getenv("OPENOBSERVE_URL", "http://localhost:5080"))
+OPENOBSERVE_ORG = _strip_env_quotes(os.getenv("OPENOBSERVE_ORG", "default"))
+OPENOBSERVE_AUTH_TOKEN = _strip_env_quotes(os.getenv("OPENOBSERVE_AUTH_TOKEN", ""))
+OPENOBSERVE_SERVICE_NAME = _strip_env_quotes(
+    os.getenv("OPENOBSERVE_SERVICE_NAME", os.getenv("POC_ID", "pharma-hub"))
+)
+OPENOBSERVE_STREAM = _strip_env_quotes(os.getenv("OPENOBSERVE_STREAM", "default"))
+OPENOBSERVE_LOGS_STREAM = _strip_env_quotes(
+    os.getenv("OPENOBSERVE_LOGS_STREAM", "pharma-hub-logs")
+)
+OPENOBSERVE_METRICS_STREAM = _strip_env_quotes(
+    os.getenv("OPENOBSERVE_METRICS_STREAM", "pharma-hub-metrics")
+)
+
+# HTTPS / SSL (corporate proxies often need SSL_CERT_FILE or SSL_VERIFY=false for dev)
+SSL_VERIFY = os.getenv("SSL_VERIFY", "true").lower() not in ("0", "false", "no")
+SSL_CERT_FILE = _strip_env_quotes(
+    os.getenv("SSL_CERT_FILE") or os.getenv("REQUESTS_CA_BUNDLE") or ""
+)
+
+
+def get_ssl_verify():
+    """Return requests/httpx `verify` value: False, True, or path to CA bundle."""
+    if not SSL_VERIFY:
+        return False
+    if SSL_CERT_FILE:
+        return SSL_CERT_FILE
+    return True
+
+
+def apply_ssl_settings() -> None:
+    """
+    Apply process-wide SSL settings.
+
+    Groq/NewsAPI use our clients directly, but HuggingFace (sentence-transformers)
+    uses `requests` internally — without this, RAG retrieval fails on corporate networks.
+    """
+    verify = get_ssl_verify()
+    if verify is not False:
+        if isinstance(verify, str) and verify:
+            os.environ.setdefault("REQUESTS_CA_BUNDLE", verify)
+            os.environ.setdefault("SSL_CERT_FILE", verify)
+        return
+
+    import ssl
+
+    ssl._create_default_https_context = ssl._create_unverified_context  # noqa: SLF001
+
+    try:
+        import urllib3
+
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    except Exception:
+        pass
+
+    try:
+        import requests
+
+        _orig_request = requests.Session.request
+
+        def _request_with_verify(self, method, url, **kwargs):
+            kwargs.setdefault("verify", False)
+            return _orig_request(self, method, url, **kwargs)
+
+        requests.Session.request = _request_with_verify  # type: ignore[method-assign]
+    except Exception:
+        pass
+
+    try:
+        import httpx
+
+        _orig_init = httpx.Client.__init__
+
+        def _client_init(self, *args, **kwargs):
+            kwargs.setdefault("verify", False)
+            return _orig_init(self, *args, **kwargs)
+
+        httpx.Client.__init__ = _client_init  # type: ignore[method-assign]
+    except Exception:
+        pass
+
+
+apply_ssl_settings()
 
 # Neo4j Configuration
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://127.0.0.1:17687")

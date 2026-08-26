@@ -41,6 +41,13 @@ from utils.langfuse_trace import (
     score_trace_by_id,
     set_current_trace_io,
 )
+from utils.openobserve_metrics import record_rag_error, record_rag_turn
+from utils.openobserve_setup import (
+    flush_openobserve,
+    log_event,
+    mark_current_span_error,
+    mark_current_span_ok,
+)
 
 
 RAG_SYSTEM_PROMPT = """You are an expert pharmaceutical knowledge assistant with deep expertise in clinical trials, drug mechanisms, and regulatory affairs. You are analyzing multiple documents simultaneously.
@@ -78,7 +85,7 @@ def _general_orientation_tail(user_question: str) -> str:
                 {"role": "system", "content": _GENERAL_ORIENTATION_SYSTEM},
                 {"role": "user", "content": user_question.strip()},
             ],
-            model="llama-3.1-8b-instant",
+            model=config.GROQ_MODEL_FAST,
             observation_name="llm.groq.orientation_tail",
         ).strip()
         return f"\n\n{tail}" if tail else ""
@@ -363,6 +370,7 @@ def show():
                     kb_session_id = get_session_id("company_knowledge")
                     user_id = get_user_id()
                     chain_started = time.perf_counter()
+                    turn_ok = True
                     chain_cm = (
                         lf.start_as_current_observation(
                             name="company_knowledge",
@@ -556,7 +564,26 @@ def show():
                                     )
                                 except Exception:
                                     pass
+                            mark_current_span_ok()
                             flush_langfuse()
+                            turn_ms = (time.perf_counter() - chain_started) * 1000
+                            record_rag_turn(
+                                "company_knowledge",
+                                turn_ms,
+                                success=turn_ok,
+                                context_chars=len(context or ""),
+                                agentic=use_agentic,
+                            )
+                            log_event(
+                                "rag.turn.complete",
+                                attributes={
+                                    "module": "company_knowledge",
+                                    "latency_ms": round(turn_ms, 2),
+                                    "context_chars": len(context or ""),
+                                    "agentic_rag": use_agentic,
+                                },
+                            )
+                            flush_openobserve()
 
                 st.session_state.rag_panel_trace = list(trace)
                 st.session_state.rag_panel_validation = (
@@ -574,6 +601,10 @@ def show():
 
             except Exception as e:
                 error_msg = f"Error generating response: {str(e)}"
+                mark_current_span_error(str(e))
+                record_rag_error("company_knowledge", type(e).__name__, str(e))
+                log_event(f"rag.turn.error | {error_msg}", level=40)
+                flush_openobserve()
                 st.error(error_msg)
                 st.session_state.rag_panel_trace = []
                 st.session_state.rag_panel_validation = None

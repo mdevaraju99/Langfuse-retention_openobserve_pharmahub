@@ -1,0 +1,29 @@
+poc_id: video-analysis
+display_name: Video Analysis
+
+langfuse:
+  public_key_env: LANGFUSE_PUBLIC_KEY
+  secret_key_env: LANGFUSE_SECRET_KEY
+  host_env: LANGFUSE_BASE_URL
+  prompt_rag: computer-vision/video-analytics
+  prompt_label: production
+  tags:
+    - product:video-analysis
+    - crowd_monitoring
+    - yolo
+  trace_names:
+    rag: video_analytics_session
+    chat: video_analytics_session
+
+scores:
+  auto:
+    - people_count
+    - crowd_status
+    - stampede_detected
+    - zone_overcrowded
+    - global_overcrowded
+
+prompts:
+  production_file: analytics-system.txt
+  baseline_file: analytics-system-baseline.txt
+  bullets_file: analytics-system.txt
