@@ -223,6 +223,8 @@ This application is for informational and educational purposes only. Always cons
 ## 📧 Contact
 
 **Developer**: Megha S D
+
+---
 **Repository**: mdevaraju99/Langfuse-retention_openobserve_pharmahub
 
 ---
