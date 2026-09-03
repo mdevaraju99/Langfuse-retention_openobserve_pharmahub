@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+import re
 
 import streamlit as st
 
@@ -16,9 +17,16 @@ from utils.langfuse_trace import (
 )
 GENERAL_SYSTEM_PROMPT_STRICT = """You are an expert pharmaceutical knowledge assistant with deep expertise in drugs, diseases, clinical trial phases, and regulatory topics.
 
+OUTPUT STYLE: Answer directly like Llama — no chain-of-thought, no long reasoning preamble. Be concise and professional.
+
+OPENING (required before ## headers):
+- Start every substantive answer with **one or two short formal sentences** that frame what you are answering (drug, trial phase, regulatory topic, etc.). Professional analyst tone.
+- Then use ## headers and bullets. Do NOT jump straight to the first header without an opening line.
+
 STRICT DOMAIN RULE:
 - You ONLY answer questions related to the pharmaceutical domain (drugs, clinical trials, healthcare research, regulatory affairs, biotech, etc.).
-- If the user asks a question that is NOT related to the pharmaceutical domain, politely decline using this message: "{domain_refusal_text}".
+- **Greetings and brief pleasantries** (hi, hello, thanks, goodbye): reply warmly in one or two sentences, then invite a pharma question. Do NOT use the refusal message for greetings.
+- If the user asks a substantive question that is NOT related to the pharmaceutical domain, politely decline using this message: "{domain_refusal_text}".
 - Do not provide any non-pharma information, even if you know it.
 
 INSTRUCTIONS:
@@ -30,12 +38,48 @@ INSTRUCTIONS:
 
 GENERAL_SYSTEM_PROMPT_OPEN = """You are a helpful assistant. You have strong expertise in drugs, clinical trials, regulatory affairs, and biotech, and you should emphasize accurate, well-sourced-style reasoning when the topic touches healthcare.
 
+OUTPUT STYLE: Answer directly like Llama — no chain-of-thought, no long reasoning preamble. Be concise.
+
+OPENING (required before ## headers):
+- Start every substantive answer with **one or two short formal sentences** that frame the topic, then ## headers and bullets.
+
 INSTRUCTIONS:
 1. Answer the user's question directly; you are not restricted to pharma-only topics while **Pharma relevance** is off in the app sidebar.
 2. Use rich markdown formatting: headers (##, ###), bullet points, and **bold**.
 3. For medical or treatment questions, include: "Please consult healthcare professionals for medical advice."
 4. Be concise, professional, and helpful.
 5. Use emojis where appropriate: 🔬 Research, 💊 Drugs, 🏥 Clinical, ⚖️ Regulatory."""
+
+
+_GREETING_ONLY = re.compile(
+    r"^\s*(hi|hello|hey|hiya|howdy|greetings|good\s+(morning|afternoon|evening|day))[\s!.?,]*$",
+    re.IGNORECASE,
+)
+_THANKS_ONLY = re.compile(r"^\s*(thanks|thank\s+you|thx|ty)[\s!.?,]*$", re.IGNORECASE)
+_BYE_ONLY = re.compile(r"^\s*(bye|goodbye|see\s+you|take\s+care)[\s!.?,]*$", re.IGNORECASE)
+
+
+def _is_small_talk(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return False
+    return bool(_GREETING_ONLY.match(t) or _THANKS_ONLY.match(t) or _BYE_ONLY.match(t))
+
+
+def _small_talk_response(text: str) -> str:
+    t = (text or "").strip().lower()
+    if _THANKS_ONLY.match(t):
+        return (
+            "You're welcome! Ask me anything about **drugs**, **clinical trials**, "
+            "**regulatory affairs**, or **biotech**."
+        )
+    if _BYE_ONLY.match(t):
+        return "Goodbye! Come back anytime with pharma questions."
+    return (
+        "Hello! I'm your **Pharma Knowledge** assistant. "
+        "Ask me about drugs, clinical trials, regulatory guidance, or biotech — I'm here to help.\n\n"
+        "*Please consult healthcare professionals for medical advice.*"
+    )
 
 
 def _build_general_messages(question: str, chat_history: list) -> list:
@@ -145,8 +189,12 @@ def show():
                 # span when apply_trace_context() sets session.id / user.id on it.
                 with chain_cm as chain_obs, trace_ctx:
                     try:
-                        messages = _build_general_messages(user_input, st.session_state.chat_history[:-1])
-                        response = _render_llm_response(messages, use_stream)
+                        if _is_small_talk(user_input):
+                            response = _small_talk_response(user_input)
+                            st.markdown(response)
+                        else:
+                            messages = _build_general_messages(user_input, st.session_state.chat_history[:-1])
+                            response = _render_llm_response(messages, use_stream)
                     except Exception as e:
                         response = f"❌ Error: {str(e)}\n\nPlease check your GROQ_API_KEY configuration."
                         st.markdown(response)

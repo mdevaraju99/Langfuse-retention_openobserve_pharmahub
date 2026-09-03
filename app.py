@@ -15,7 +15,9 @@ import config
 
 # Optional OpenObserve / OpenTelemetry tracing (enabled via .env)
 from utils.openobserve_setup import setup_openobserve
+from utils.langfuse_trace import clear_prompt_cache
 
+clear_prompt_cache()
 setup_openobserve()
 
 # Page configuration

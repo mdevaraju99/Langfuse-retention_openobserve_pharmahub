@@ -5,6 +5,7 @@ Enhanced: streaming answers, agentic retrieval, capacity readout.
 import re
 import time
 from contextlib import nullcontext
+from pathlib import Path
 
 import streamlit as st
 import pandas as pd
@@ -52,6 +53,10 @@ from utils.openobserve_setup import (
 
 RAG_SYSTEM_PROMPT = """You are an expert pharmaceutical knowledge assistant with deep expertise in clinical trials, drug mechanisms, and regulatory affairs. You are analyzing multiple documents simultaneously.
 
+OUTPUT STYLE (match Llama 3.3 direct RAG answers — NOT GPT reasoning essays):
+- Answer immediately. No chain-of-thought, no "Let me analyze...", no step-by-step planning, no preamble.
+- Be concise and factual like Llama: short sections, bullet facts, minimal filler prose.
+
 INSTRUCTIONS:
 1. For anything stated about the **uploaded documents**, use ONLY the provided context. Cite every such fact with [document_name.pdf]. Do not invent trial results, dosing, or product claims.
 2. Use rich markdown: headers (##, ###), bullets, **bold**, tables where helpful.
@@ -62,7 +67,36 @@ INSTRUCTIONS:
 WHEN THE DOCUMENTS DO NOT ANSWER THE QUESTION (e.g. background or definition missing in context):
 6. Say clearly in the main answer that the specific detail is **not** in the provided documents (you may note what IS in the files if relevant).
 7. Immediately after, add a section titled exactly **General context (not from your documents):** followed by **at most two short sentences** of widely accepted pharmaceutical/clinical orientation related to the user's question. No lists. No product-specific claims. This is general knowledge only, not sourced from the uploads.
-"""
+
+FORBIDDEN FOR GPT MODELS: internal reasoning blocks; long "Based on my analysis..." intros; numbered reasoning steps before the answer.
+FORBIDDEN FOR COMPARISON QUESTIONS: "## Planned ..." / "## Actual ..." bullet sections — use a markdown table instead."""
+
+_LOCAL_RAG_PROMPT_FILE = (
+    Path(__file__).resolve().parent.parent / "ops" / "prompts" / "pharma-hub" / "rag-system-bullets.txt"
+)
+
+
+def _load_local_rag_prompt() -> str:
+    try:
+        if _LOCAL_RAG_PROMPT_FILE.is_file():
+            text = _LOCAL_RAG_PROMPT_FILE.read_text(encoding="utf-8").strip()
+            if text:
+                return text
+    except Exception:
+        pass
+    return RAG_SYSTEM_PROMPT
+
+
+def _resolve_rag_system_prompt() -> tuple[str, object | None]:
+    """Local gpt-oss/Llama-style prompt by default; Langfuse when RAG_PROMPT_USE_LOCAL=false."""
+    fallback = _load_local_rag_prompt()
+    if getattr(config, "RAG_PROMPT_USE_LOCAL", True):
+        return fallback, None
+    return get_managed_prompt(
+        "pharma/rag-system",
+        label="production",
+        fallback_text=fallback,
+    )
 
 
 # Tiny follow-up when we skip the main RAG call (no retrieved text) or withhold a grounded answer.
@@ -443,11 +477,7 @@ def show():
                                 answer += _general_orientation_tail(prompt)
                                 st.markdown(answer)
                             else:
-                                system_text, prompt_obj = get_managed_prompt(
-                                    "pharma/rag-system",
-                                    label="production",
-                                    fallback_text=RAG_SYSTEM_PROMPT,
-                                )
+                                system_text, prompt_obj = _resolve_rag_system_prompt()
                                 messages = [
                                     {"role": "system", "content": system_text},
                                     {

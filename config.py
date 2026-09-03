@@ -57,6 +57,16 @@ GROQ_MODEL_PRIMARY = _strip_env_quotes(
 GROQ_MODEL_FAST = _strip_env_quotes(
     os.getenv("GROQ_MODEL_FAST", "openai/gpt-oss-20b")
 )
+# Lower primary temperature reduces GPT-style reasoning dumps; closer to Llama directness.
+GROQ_TEMPERATURE_PRIMARY = float(os.getenv("GROQ_TEMPERATURE_PRIMARY", "0.25") or 0.25)
+GROQ_TEMPERATURE_FAST = float(os.getenv("GROQ_TEMPERATURE_FAST", "0.1") or 0.1)
+# When true, Company Knowledge uses ops/prompts/pharma-hub/rag-system-bullets.txt
+# (gpt-oss / Llama-style). Set false after seeding the same text to Langfuse production.
+RAG_PROMPT_USE_LOCAL = os.getenv("RAG_PROMPT_USE_LOCAL", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 # Optional USD per 1M tokens — sent to Langfuse as cost_details on Groq generations.
 # Premium vs free Groq key does not change Langfuse; set prices here or in Langfuse → Models.

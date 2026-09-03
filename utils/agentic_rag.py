@@ -93,6 +93,14 @@ def _fast_model() -> str:
     return getattr(config, "GROQ_MODEL_FAST", None) or "openai/gpt-oss-20b"
 
 
+def _primary_temperature() -> float:
+    return float(getattr(config, "GROQ_TEMPERATURE_PRIMARY", 0.25) or 0.25)
+
+
+def _fast_temperature() -> float:
+    return float(getattr(config, "GROQ_TEMPERATURE_FAST", 0.1) or 0.1)
+
+
 @dataclass
 class AgentState:
     user_question: str
@@ -124,7 +132,7 @@ def ask_clarifying_question(user_question: str) -> str:
     c = _client()
     r = c.chat.completions.create(
         model=_fast_model(),
-        temperature=0.1,
+        temperature=_fast_temperature(),
         max_tokens=80,
         messages=[
             {
@@ -146,7 +154,7 @@ def create_retrieval_plan(user_question: str, rewritten_query: str) -> str:
     c = _client()
     r = c.chat.completions.create(
         model=_fast_model(),
-        temperature=0.1,
+        temperature=_fast_temperature(),
         max_tokens=120,
         messages=[
             {
@@ -198,7 +206,7 @@ def grade_context_relevance(question: str, context_prefix: str) -> bool:
     c = _client()
     r = c.chat.completions.create(
         model=_fast_model(),
-        temperature=0,
+        temperature=_fast_temperature(),
         max_tokens=5,
         messages=[
             {
@@ -223,11 +231,12 @@ def _groq_chat_complete_raw(
 ) -> Tuple[str, Dict[str, int]]:
     """Non-streaming Groq call. Returns (text, usage_dict)."""
     model = model or _primary_model()
+    temp = _primary_temperature()
     c = _client()
     r = c.chat.completions.create(
         model=model,
         messages=messages,
-        temperature=0.35,
+        temperature=temp,
         max_tokens=2048,
         stream=False,
     )
@@ -248,13 +257,14 @@ def stream_groq_chat(
         return
 
     model = model or _primary_model()
+    temp = _primary_temperature()
     obs_label = observation_name or "groq.chat.completion.stream"
 
     c = _client()
     base_kwargs = dict(
         model=model,
         messages=messages,
-        temperature=0.35,
+        temperature=temp,
         max_tokens=2048,
         stream=True,
     )
@@ -290,7 +300,7 @@ def stream_groq_chat(
                     as_type="generation",
                     model=model,
                     input=trim_trace_messages(messages),
-                    model_parameters={"temperature": 0.35, "max_tokens": 2048},
+                    model_parameters={"temperature": temp, "max_tokens": 2048},
                 )
                 if prompt is not None:
                     gen_kwargs["prompt"] = prompt
@@ -320,6 +330,7 @@ def complete_groq_chat(
         return "Set GROQ_API_KEY in .env to enable answers."
 
     model = model or _primary_model()
+    temp = _primary_temperature()
     obs_label = observation_name or "groq.chat.completion"
 
     lf = get_langfuse_client()
@@ -333,7 +344,7 @@ def complete_groq_chat(
             as_type="generation",
             model=model,
             input=trim_trace_messages(messages),
-            model_parameters={"temperature": 0.35, "max_tokens": 2048},
+            model_parameters={"temperature": temp, "max_tokens": 2048},
         )
         if prompt is not None:
             gen_kwargs["prompt"] = prompt
