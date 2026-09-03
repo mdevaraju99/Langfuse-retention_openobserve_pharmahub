@@ -222,8 +222,8 @@ This application is for informational and educational purposes only. Always cons
 
 ## 📧 Contact
 
-**Developer**: Thanusree J  
-**Repository**: https://github.com/ThanusreeJ/Pharma_knowledge_portal
+**Developer**: Megha S D
+**Repository**: mdevaraju99/Langfuse-retention_openobserve_pharmahub
 
 ---
 
